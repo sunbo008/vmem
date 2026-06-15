@@ -1,23 +1,24 @@
-四巨头审查 R71-R80：测试工程 — 故障注入框架、模糊测试策略
+四巨头审查 R81-R90：扩展性与未来演进 — 接口抽象、插件化、配置热更新
 
 【Google 总监】
-- 设计故障注入框架 FaultInjection：编译时开关（FAULT_INJECTION宏）
-  Release 零开销（AggressiveInlining 空方法）
-  支持三种故障模式：AllocFail/CasDelay/PipeDisconnect
+- 新增 IPageAllocator 接口：解耦 PagePool 与 NativeMemory
+  V1 使用 NativePageAllocator，V2 可替换为 LargePageAllocator（VirtualAlloc 大页）
+  或 NUMA 感知分配器
+- PagePool 增加 _allocator 字段引用
 
 【Amazon 总监】
-- 故障注入测试用例设计：
-  · Write 中途分配失败验证 BatchLease 回滚
-  · 高竞争 CAS 收敛性验证
-  · IPC 断连重连验证
-- 所有异常路径必须有对应自动化测试
+- 新增 ISnapshotSerializer 接口：解耦快照序列化
+  V1 使用 RawSnapshotSerializer（无压缩），V2 可选 Zstd 压缩
+  支持未来加密和远程备份扩展
 
 【Oracle 总监】
-- 模糊测试策略（V2 目标）：
-  · SharpFuzz 对 IPC JSON 解析和 SecurityDescriptor
-  · 自定义模糊对 FS 路径和 Read/Write 偏移
-  · V1 通过边界测试和单元测试部分覆盖
+- 配置热更新路线图表格：
+  · V1 支持热更新：日志级别、告警阈值、快照开关
+  · V1 需重启：内核缓存模式、页大小、磁盘容量
+  · V2 研究方向：动态扩容
 
 【Microsoft 总监】
-- FaultConfig record 定义：清晰的故障参数化配置
-- 编译时开关确保生产构建无任何故障注入代码残留
+- IVMemPlugin 插件接口预留（V2+）：
+  · OnMounted/OnUnmounting 生命周期钩子
+  · 示例用例：杀毒排除自动配置、Prometheus 导出、通知集成
+  · V1 仅声明接口，不实现加载器

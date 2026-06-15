@@ -268,7 +268,82 @@ hooyao/RamDrive 已验证 WinFsp.Native + Native AOT 的可行性：
 
 ---
 
-## 5. 日志与可观测性（L3 范式补丁）
+## 5. 扩展性与接口抽象（R81-R90 四巨头审查）
+
+### 5.1 IPageAllocator 接口（Google 总监）
+
+为支持未来替换 `NativeMemory` 为其他后端（如 VirtualAlloc 大页、NUMA 感知分配），抽取接口：
+
+```csharp
+public interface IPageAllocator : IDisposable
+{
+    nint Allocate(int pageSize);
+    void Free(nint page, int pageSize);
+    void Clear(nint page, int pageSize);
+}
+
+/// V1 实现：直接 NativeMemory
+internal sealed class NativePageAllocator : IPageAllocator
+{
+    public nint Allocate(int pageSize) => (nint)NativeMemory.AllocZeroed((nuint)pageSize);
+    public void Free(nint page, int pageSize) => NativeMemory.Free((void*)page);
+    public void Clear(nint page, int pageSize) => NativeMemory.Clear((void*)page, (nuint)pageSize);
+}
+
+/// V2+ 可选：VirtualAlloc 大页实现
+// internal sealed class LargePageAllocator : IPageAllocator { ... }
+```
+
+### 5.2 ISnapshotSerializer 接口（Amazon 总监）
+
+为支持未来增加压缩、加密、远程备份等快照扩展：
+
+```csharp
+public interface ISnapshotSerializer
+{
+    Task WriteAsync(Stream output, SnapshotData data, CancellationToken ct);
+    Task<SnapshotData> ReadAsync(Stream input, CancellationToken ct);
+}
+
+/// V1 实现：原始二进制（无压缩）
+internal sealed class RawSnapshotSerializer : ISnapshotSerializer { ... }
+/// V2+ 可选：Zstd 压缩序列化
+// internal sealed class ZstdSnapshotSerializer : ISnapshotSerializer { ... }
+```
+
+### 5.3 配置热更新路线图（Oracle 总监）
+
+| 配置项 | V1 热更新 | 说明 |
+|--------|-----------|------|
+| 日志级别 | ✓ | LoggingLevelSwitch 实时切换 |
+| 内核缓存模式 | ✗ | 需要重新挂载 |
+| 页大小 | ✗ | 需要重新挂载 |
+| 磁盘容量 | ✗ | V2+ 研究动态扩容 |
+| 告警阈值 | ✓ | IPC UpdateGlobalSettings |
+| 快照开关 | ✓ | IPC ToggleSnapshot |
+
+### 5.4 插件化扩展点（Microsoft 总监）
+
+V1 预留接口但不实现插件加载：
+
+```csharp
+/// V2+ 扩展点声明
+public interface IVMemPlugin
+{
+    string Name { get; }
+    void OnMounted(DiskConfig config, IServiceProvider services);
+    void OnUnmounting(string driveLetter);
+}
+
+// V2+ 用例：
+// - Antivirus exclusion auto-configurator
+// - Prometheus metrics exporter
+// - Slack/Teams notification on error
+```
+
+---
+
+## 6. 日志与可观测性（L3 范式补丁）
 
 > 详见 [子方案 ⑦ - 日志与可观测性](./vmem_07_logging_observability.plan.md)
 

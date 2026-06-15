@@ -39,6 +39,9 @@ public sealed class PagePool : IDisposable
     // R42 注意：每 Push/Pop 创建 Node 对象，百万页面时产生 GC 压力
     // V2 备选：无 GC 的 lock-free stack（NativeMemory 链表或 mpsc queue）
     private readonly ConcurrentStack<nint> _freePages;
+    // R81-R90：通过 IPageAllocator 接口解耦物理内存分配
+    // V1 默认 NativePageAllocator，V2 可替换为 LargePageAllocator
+    private readonly IPageAllocator _allocator;
     private readonly int _pageSize;          // 默认 4KB，可选 64KB
     private readonly long _maxPages;         // 页数上限 = CapacityBytes / PageSize
     private long _allocatedCount;            // 已从 OS 分配的总页数（Interlocked）
