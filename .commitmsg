@@ -1,19 +1,20 @@
-四巨头审查 R21-R30：性能工程 — 零分配热路径、ArrayPool、PipeFraming优化
+四巨头审查 R31-R40：可靠性加固 — 异常安全Dispose、Mount防护、优雅关机
 
 【Google 总监】
-- Write Phase 1 扫描：stackalloc/ArrayPool 替代 new List<int> 减少 GC
-- Write 方法末尾归还 ArrayPool 租借数组
-- PipeFraming.WriteMessageAsync：消息大小上限检查
+- MountAsync 中 StartDispatcher 通过 Task.Run 在独立线程运行
+  避免阻塞调用线程
 
 【Microsoft 总监】
-- PagePool 增加 _freeCount 计数器字段声明（替代 O(n) ConcurrentStack.Count）
-- EnsurePageTableCapacity 在读锁内预检
+- MountedDisk.Dispose 严格顺序：Unmount → Snapshot → FS → Pool
+  每个步骤独立 try-catch 避免一个失败影响后续资源释放
 
 【Amazon 总监】
-- PipeFraming 修复 header.ToArray() 堆分配
-- WriteMessageAsync 增加 FlushAsync 确保对端立即收到
-- ReadMessageAsync 增加消息大小上限校验
+- MountAsync 增加参数校验前置（DriveLetter 非空、CapacityBytes > 0）
+- 双重检查模式：sem 等待后再次检查盘符是否已被占用
+- 失败路径逆序 Dispose：fs?.Dispose() → pool?.Dispose()
+- 成功路径记录结构化日志含完整磁盘配置
 
 【Oracle 总监】
-- Read 热路径保持读锁全程覆盖，数据安全优先于性能
-- Write Phase 3 中 missingIndices 迭代从 Span 直接读取
+- MountedDisk.StopAsync 分离快照操作与资源释放
+- 快照超时使用 OperationCanceledException 捕获，不影响后续 Dispose
+- Dispose 中每个阶段的异常独立记录，不吞没不传播

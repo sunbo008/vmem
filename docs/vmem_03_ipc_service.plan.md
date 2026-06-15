@@ -345,23 +345,45 @@ public sealed class RamDiskManager : IAsyncDisposable
 
     public async Task MountAsync(DiskConfig config, CancellationToken ct)
     {
+        // Amazon 审查：参数校验前置
+        ArgumentException.ThrowIfNullOrWhiteSpace(config.DriveLetter);
+        if (config.CapacityBytes <= 0) throw new ArgumentOutOfRangeException(nameof(config.CapacityBytes));
+        if (_disks.ContainsKey(config.DriveLetter))
+            throw new DriveInUseException(config.DriveLetter);
+
         var sem = _mountLocks.GetOrAdd(config.DriveLetter, _ => new SemaphoreSlim(1, 1));
         await sem.WaitAsync(ct);
         try
         {
-            // 顺序：Pool → FS → StartDispatcher；失败逆序 Dispose
-            var pool = new PagePool(config.CapacityBytes, config.PageSizeKB * 1024);
+            // 再次检查（sem 等待期间可能已被其他请求挂载）
+            if (_disks.ContainsKey(config.DriveLetter))
+                throw new DriveInUseException(config.DriveLetter);
+
+            // 顺序构建：Pool → FS → StartDispatcher；失败逆序 Dispose
+            PagePool? pool = null;
+            VMemFileSystem? fs = null;
             try
             {
-                var fs = new VMemFileSystem(pool, config);
-                try
-                {
-                    fs.StartDispatcher();
-                    _disks[config.DriveLetter] = new MountedDisk(config, pool, fs);
-                }
-                catch { fs.Dispose(); throw; }
+                pool = new PagePool(config.CapacityBytes, config.PageSizeKB * 1024,
+                    preAllocate: config.PreAllocate);
+
+                fs = new VMemFileSystem(pool, config);
+
+                // StartDispatcher 在独立线程运行（它会阻塞）
+                _ = Task.Run(() => fs.Host.Mount(config.DriveLetter), ct);
+
+                _disks[config.DriveLetter] = new MountedDisk(config, pool, fs);
+                _logger.Information("Mounted {Drive}: {Label} ({SizeGB}GB, page={PageKB}KB)",
+                    config.DriveLetter, config.Label, config.CapacityBytes / 1073741824.0,
+                    config.PageSizeKB);
             }
-            catch { pool.Dispose(); throw; }
+            catch (Exception ex)
+            {
+                _logger.Error(ex, "Mount {Drive} failed, cleaning up", config.DriveLetter);
+                fs?.Dispose();    // 逆序 Dispose
+                pool?.Dispose();
+                throw;
+            }
         }
         finally { sem.Release(); }
     }
@@ -383,7 +405,33 @@ public sealed class MountedDisk : IDisposable
     public PagePool Pool { get; }
     public VMemFileSystem FileSystem { get; }
     public SnapshotManager? Snapshot { get; }
-    // Dispose: StopDispatcher → FS.Dispose → Pool.Dispose
+
+    // Oracle 审查：Dispose 严格顺序，防止 UAF
+    public void Dispose()
+    {
+        try { FileSystem.Host.Unmount(); }       // StopDispatcher → 等待回调完成
+        catch (Exception ex) { _logger.Error(ex, "Unmount error"); }
+
+        try { Snapshot?.Dispose(); }
+        catch (Exception ex) { _logger.Error(ex, "Snapshot dispose error"); }
+
+        try { FileSystem.Dispose(); }            // 释放文件树（归还页面到 Pool）
+        catch (Exception ex) { _logger.Error(ex, "FS dispose error"); }
+
+        try { Pool.Dispose(); }                  // 释放物理内存
+        catch (Exception ex) { _logger.Error(ex, "Pool dispose error"); }
+    }
+
+    public async Task StopAsync(CancellationToken ct)
+    {
+        // 如果启用快照 → 执行最终快照
+        if (Snapshot != null)
+        {
+            try { await Snapshot.SnapshotAsync(ct); }
+            catch (OperationCanceledException) { _logger.Warning("Final snapshot timed out"); }
+            catch (Exception ex) { _logger.Error(ex, "Final snapshot failed"); }
+        }
+    }
 }
 ```
 
