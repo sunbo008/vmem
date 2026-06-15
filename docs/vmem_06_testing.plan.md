@@ -51,6 +51,19 @@ isProject: false
 ### 新增交付物
 - `docs/known-skips.md`：winfsp-tests skip 理由 + WinFsp 版本 + 计划 Phase。**禁止** open-ended known failures。
 
+**预期 Phase 1 Skip 列表**（辩论裁决 R66-R70）：
+
+| winfsp-tests 类别 | Skip 理由 | 计划 Phase |
+|-------------------|-----------|-----------|
+| `stream_*` | Named Streams 未实现 | Phase 2 考虑 |
+| `reparse_*` | Reparse Points 未实现 | Phase 2 考虑 |
+| `ea_*` | Extended Attributes 不实现 | ✗ |
+| `oplock_*` | Oplock 不实现（RAM 盘无远程场景） | ✗ |
+| `hardlink_*` | Hard Links 未实现 | Phase 2 考虑 |
+| `querydir_single` | GetDirInfoByName 未实现（V1 用 ReadDirectory） | Phase 2 |
+
+> 所有非 skip 测试 Phase 1 必须 **100% 通过**。
+
 ---
 
 ## 2. 单元测试详细覆盖

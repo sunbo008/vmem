@@ -92,8 +92,13 @@ L3 — FileNode 元数据锁（仅保护 RefCount/PendingDelete，持锁时间 <
 禁止：
 - 持 L2 写锁时调用 L1（Rename 路径）
 - 持 L1 时等待 L2 写锁（应：L1 内只做树操作，释放后再 I/O）
-- Cleanup/Close 中：L1 Remove + L3 RefCount--，RefCount==0 时 L2 Dispose，顺序固定
-- FspNotify 必须在 L1/L2 全部释放后调用（WinFsp 可能重入）
+
+Cleanup/Close 锁序（R61 细化）：
+- Cleanup: if PendingDelete → L1(Remove from parent) → release L1 → Notify（锁外）
+- Close:   L3(DecrementOpen) → if RefCount==0 && PendingDelete → L2(Content.Dispose) → release L2
+- 关键：L1 和 L2 不在同一线程同时持有；Dispose 在 Close 而非 Cleanup
+
+FspNotify 必须在 L1/L2 全部释放后调用（WinFsp 可能重入）
 ```
 
 ### 2.2 API 设计
