@@ -1,24 +1,21 @@
-四巨头审查 R1-R10：伪代码严谨性修复 — CAS竞态、异常安全、原子性
+四巨头审查 R11-R20：API契约完整性 — 参数校验、完整伪代码、异常处理
 
 【Google 总监】
-- 修复 TryReserve CAS 竞态：增加后置校验，超额时回退预留
-- Write 伪代码：禁止跨页 CopyBlock，强制逐页 memcpy
-- TryRent 完整伪代码：容量快速检查 + OOM 捕获 + 计数器维护
+- SetLength 截断时最后页内部分清零防信息泄漏
+- Write 三阶段完整伪代码含 EnsurePageTableCapacity
 
 【Microsoft 总监】
-- 修复 Rename rollback 原子性：先检查存在性再 TryRemove，
-  避免 rollback TryAdd 失败导致节点丢失
-- 完善 Cleanup/Close 锁序注释
+- FileNode 工厂方法替代公开构造函数：CreateFile/CreateDirectory
+  确保 Children ConcurrentDictionary 始终用 OrdinalIgnoreCase
+- FileNode 构造时自动设置时间戳和默认 Attributes
 
 【Amazon 总监】
-- PagePool.Return 增加页面有效性校验（page==0 抛异常）
-- Return 不检查 _disposed：Dispose 后延迟 Return 仍归还，
-  Dispose 统一 Free 全部页面
-- PagePool.Dispose 完整伪代码：泄漏检测 + 逐页 Free + 日志
+- MountCommand 完整异常处理：DriveInUse/OOM/通用异常
+- 最小容量校验（1MB）
+- 用户友好的错误提示和退出码映射
 
 【Oracle 总监】
-- BatchLease.Commit 增加边界检查 + double-commit 防护 + Dispose 后防护
-- PageLease 增加 Debug.Assert + double-commit 防护 + Dispose 后 page=0
-- Read 完整伪代码：读锁全程覆盖 + 稀疏零填充 + FileSize clamp
-- Write 完整伪代码：三阶段含 TOCTOU 重检 + FileSize/AllocationSize 事务提交
-- TryRentFromReservation 完整伪代码：CAS 扣减预留 + OOM 回退
+- SetLength 完整伪代码：扩展预留 + 截断释放 + 预留回退
+- PagedFileContent.Dispose 完整伪代码：锁保护 + 逐页归还 + 预留清零
+- SecurityDescriptor Get/Set 深拷贝属性实现
+- Read 完整伪代码已在 R1-10 补充

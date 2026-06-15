@@ -105,17 +105,47 @@ internal sealed class MountCommand : Command
 
     public async Task<int> HandleAsync(/* ... */, CancellationToken ct)
     {
-        var config = new DiskConfig { /* from CLI args */ };
+        // Amazon 审查：完整的异常处理 + 参数校验 + 优雅退出
+        var config = DiskConfig.FromCliArgs(drive, size, pageSize, cache, label, sddl, preAllocate);
+        if (config.CapacityBytes < 1024 * 1024) // 最小 1MB
+        {
+            Console.Error.WriteLine("Error: minimum size is 1MB");
+            return (int)VmErrorCode.InvalidArgument;
+        }
+
         using var manager = new RamDiskManager();
-        await manager.MountAsync(config, ct);
+        try
+        {
+            await manager.MountAsync(config, ct);
+            Console.WriteLine($"Mounted {config.DriveLetter} ({config.Label}, " +
+                $"{config.CapacityBytes / 1024 / 1024}MB, cache={config.CacheMode})");
+            Console.WriteLine("Press Ctrl+C to unmount and exit.");
 
-        // 阻塞直到 Ctrl+C
-        var tcs = new TaskCompletionSource();
-        Console.CancelKeyPress += (_, e) => { e.Cancel = true; tcs.SetResult(); };
-        await tcs.Task;
+            var tcs = new TaskCompletionSource();
+            Console.CancelKeyPress += (_, e) => { e.Cancel = true; tcs.SetResult(); };
+            await tcs.Task;
 
-        await manager.UnmountAsync(config.DriveLetter, CancellationToken.None);
-        return 0;
+            Console.WriteLine("Unmounting...");
+            await manager.UnmountAsync(config.DriveLetter, CancellationToken.None);
+            Console.WriteLine("Unmounted successfully.");
+            return 0;
+        }
+        catch (DriveInUseException)
+        {
+            Console.Error.WriteLine($"Error: drive {config.DriveLetter} is already in use");
+            return (int)VmErrorCode.DriveInUse;
+        }
+        catch (OutOfMemoryException)
+        {
+            Console.Error.WriteLine("Error: not enough memory to create RAM disk");
+            return (int)VmErrorCode.DiskFull;
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            Console.Error.WriteLine($"Fatal: {ex.Message}");
+            _logger.Fatal(ex, "CLI mount failed");
+            return (int)VmErrorCode.Internal;
+        }
     }
 }
 ```

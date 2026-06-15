@@ -39,6 +39,33 @@ isProject: false
 ```csharp
 public sealed class FileNode : IDisposable
 {
+    // Microsoft 审查：构造函数确保不变量
+    public static FileNode CreateFile(string name, PagePool pool, byte[]? securityDescriptor)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(name);
+        return new FileNode(name, isDirectory: false, pool, securityDescriptor);
+    }
+
+    public static FileNode CreateDirectory(string name, byte[]? securityDescriptor)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(name);
+        return new FileNode(name, isDirectory: true, pool: null, securityDescriptor);
+    }
+
+    private FileNode(string name, bool isDirectory, PagePool? pool, byte[]? sd)
+    {
+        Name = name;
+        IsDirectory = isDirectory;
+        Content = isDirectory ? null : new PagedFileContent(pool!);
+        Children = isDirectory
+            ? new ConcurrentDictionary<string, FileNode>(StringComparer.OrdinalIgnoreCase)
+            : null;
+        _securityDescriptor = sd?.ToArray(); // 深拷贝
+        var now = DateTime.UtcNow.ToFileTimeUtc();
+        CreationTime = LastAccessTime = LastWriteTime = ChangeTime = now;
+        Attributes = isDirectory ? FileAttributes.Directory : FileAttributes.Archive;
+    }
+
     public string Name { get; set; }
     public bool IsDirectory { get; }
     public FileAttributes Attributes { get; set; }
@@ -49,8 +76,14 @@ public sealed class FileNode : IDisposable
     public long LastWriteTime { get; set; }
     public long ChangeTime { get; set; }
 
-    // 安全描述符（self-relative 二进制，GetSecurityDescriptorLength 获取长度）
-    public byte[] SecurityDescriptor { get; set; }
+    // 安全描述符（self-relative 二进制）
+    // Oracle 审查：Get/Set 均深拷贝，防止外部持有引用修改内部状态
+    private byte[]? _securityDescriptor;
+    public byte[]? SecurityDescriptor
+    {
+        get => _securityDescriptor?.ToArray();
+        set => _securityDescriptor = value?.ToArray();
+    }
 
     // 文件/目录规则（辩论裁决 R19-1）：
     //   目录：Content=null, Children!=null
@@ -279,8 +312,92 @@ public sealed class PagedFileContent : IDisposable
 
         return NtStatus.STATUS_SUCCESS;
     }
-    public NtStatus SetLength(long newLength);
-    public void Dispose();
+    public NtStatus SetLength(long newLength)
+    {
+        if (newLength < 0) return NtStatus.STATUS_INVALID_PARAMETER;
+
+        _rwLock.EnterWriteLock();
+        try
+        {
+            long oldSize = _fileSize;
+            if (newLength == oldSize) return NtStatus.STATUS_SUCCESS;
+
+            if (newLength > oldSize)
+            {
+                // 扩展：预留配额（稀疏语义，不分配物理页）
+                int oldPages = CeilDiv(oldSize, _pool.PageSize);
+                int newPages = CeilDiv(newLength, _pool.PageSize);
+                int additionalPages = newPages - oldPages;
+                if (additionalPages > 0 && !_pool.TryReserve(additionalPages))
+                    return NtStatus.STATUS_DISK_FULL;
+                EnsurePageTableCapacity(newPages);
+                _reservedPages += additionalPages;
+            }
+            else
+            {
+                // 截断：释放超出页 + 最后页部分清零 + 归还预留
+                int keepPages = CeilDiv(newLength, _pool.PageSize);
+                int oldPages = CeilDiv(oldSize, _pool.PageSize);
+
+                // 释放 [keepPages, oldPages) 范围的物理页
+                for (int i = keepPages; i < oldPages && i < _pageTable.Length; i++)
+                {
+                    if (_pageTable[i] != 0)
+                    {
+                        _pool.Return(_pageTable[i]);
+                        _pageTable[i] = 0;
+                        _allocationSize -= _pool.PageSize;
+                    }
+                }
+
+                // 最后保留页内部分清零（Google 审查：防信息泄漏）
+                if (keepPages > 0 && _pageTable[keepPages - 1] != 0)
+                {
+                    int tail = (int)(newLength % _pool.PageSize);
+                    if (tail > 0)
+                        NativeMemory.Clear((byte*)_pageTable[keepPages - 1] + tail,
+                            (nuint)(_pool.PageSize - tail));
+                }
+
+                // 归还多余预留
+                int releasedReservation = Math.Max(0,
+                    (int)_reservedPages - keepPages + CeilDiv(oldSize, _pool.PageSize) - oldPages);
+                if (releasedReservation > 0)
+                {
+                    _pool.Unreserve(releasedReservation);
+                    _reservedPages -= releasedReservation;
+                }
+            }
+
+            Volatile.Write(ref _fileSize, newLength);
+            _allocationSize = Math.Max(_allocationSize, CeilToPageBoundary(newLength));
+            return NtStatus.STATUS_SUCCESS;
+        }
+        finally { _rwLock.ExitWriteLock(); }
+    }
+
+    public void Dispose()
+    {
+        _rwLock.EnterWriteLock();
+        try
+        {
+            for (int i = 0; i < _pageTable.Length; i++)
+            {
+                if (_pageTable[i] != 0)
+                {
+                    _pool.Return(_pageTable[i]);
+                    _pageTable[i] = 0;
+                }
+            }
+            if (_reservedPages > 0)
+            {
+                _pool.Unreserve(_reservedPages);
+                _reservedPages = 0;
+            }
+        }
+        finally { _rwLock.ExitWriteLock(); }
+        _rwLock.Dispose();
+    }
 }
 ```
 
