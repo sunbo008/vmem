@@ -212,7 +212,12 @@ vmem/
 │   │   │   ├── OperationContext.cs
 │   │   │   ├── Contract.cs
 │   │   │   ├── HealthChecker.cs
-│   │   │   └── DigestWriter.cs
+│   │   │   ├── DigestWriter.cs
+│   │   │   └── FaultInjection.cs    # 故障注入（FAULT_INJECTION 编译开关）
+│   │   ├── Abstractions/            # → R81-R90 接口抽象
+│   │   │   ├── IPageAllocator.cs
+│   │   │   ├── ISnapshotSerializer.cs
+│   │   │   └── IVMemPlugin.cs       # V2+ 预留
 │   │   ├── Snapshot/                # → 子方案 ⑤
 │   │   │   └── SnapshotManager.cs
 │   │   └── Ipc/                     # → 子方案 ③
@@ -265,6 +270,9 @@ vmem/
 | System.CommandLine | 2.x | CLI 参数解析（辩论裁决 R13） |
 | BenchmarkDotNet | 0.14.x | 性能基准测试 |
 | Serilog + Sinks | 4.x | 结构化日志（→ 子方案 ⑦） |
+| Polly | 8.x | IPC 客户端重试策略 |
+| xUnit | 2.x | 测试框架 |
+| coverlet.collector | latest | 代码覆盖率 |
 
 **运行时依赖**：[WinFsp](https://winfsp.dev/rel/) 2.x
 
@@ -313,6 +321,13 @@ vmem/
 > - Children ConcurrentDictionary 必须 OrdinalIgnoreCase（R19/R20 P0）
 > - 0 字节文件 = Content 非 null 空实例（R19）
 > - AOT CI 门禁从 Phase 1 开始（R18）
+> - IPageAllocator 接口抽象 PagePool 内存分配（四巨头 R81-R90）
+> - TryReserve CAS 增加后置校验防超额（四巨头 R1-R10）
+> - Rename 先检查后 Remove 避免 rollback 原子性问题（四巨头 R1-R10）
+> - Write Phase 1 用 stackalloc/ArrayPool 替代 List 减少 GC（四巨头 R21-R30）
+> - 故障注入框架：FAULT_INJECTION 编译开关（四巨头 R71-R80）
+> - SecurityDescriptor Get/Set 深拷贝（四巨头 R11-R20）
+> - BatchLease 增加 ObjectDisposedException + double-commit 防护（四巨头 R1-R10）
 
 | 周次 | 任务 | 子方案 | 验收标准 |
 |------|------|--------|----------|
@@ -402,7 +417,7 @@ public enum VmErrorCode
 |------|-----|------|
 | 文件系统名称 | `VMEM` | GetVolumeInfo |
 | 卷标 | 用户自定义 | 默认 "VMem RAM Disk" |
-| 扇区大小 | 512 bytes | WinFsp 标准 |
+| 扇区大小 | 4096 bytes | 与 PageSize 对齐（R43 FileSystemHost.SectorSize=4096） |
 | 分配单元 | PageSize | 默认 4096 |
 | 最大文件名 | 255 字符 | NTFS 兼容 |
 | 大小写 | 不敏感 | OrdinalIgnoreCase |

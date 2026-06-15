@@ -1,24 +1,28 @@
-四巨头审查 R81-R90：扩展性与未来演进 — 接口抽象、插件化、配置热更新
+四巨头审查 R91-R99：最终打磨 — 跨方案一致性、文档完整性、交付就绪
+
+【全员共识修复】
+- 父方案扇区大小从 512 修正为 4096（与 FileSystemHost.SectorSize=4096 一致）
+- 项目结构新增 Abstractions/ 目录（IPageAllocator/ISnapshotSerializer/IVMemPlugin）
+- 项目结构新增 FaultInjection.cs（FAULT_INJECTION 编译开关）
+- 依赖表补充 Polly 8.x（IPC重试）、xUnit 2.x、coverlet.collector
+- Phase 1 关键决策清单新增 7 条四巨头审查结论
 
 【Google 总监】
-- 新增 IPageAllocator 接口：解耦 PagePool 与 NativeMemory
-  V1 使用 NativePageAllocator，V2 可替换为 LargePageAllocator（VirtualAlloc 大页）
-  或 NUMA 感知分配器
-- PagePool 增加 _allocator 字段引用
-
-【Amazon 总监】
-- 新增 ISnapshotSerializer 接口：解耦快照序列化
-  V1 使用 RawSnapshotSerializer（无压缩），V2 可选 Zstd 压缩
-  支持未来加密和远程备份扩展
-
-【Oracle 总监】
-- 配置热更新路线图表格：
-  · V1 支持热更新：日志级别、告警阈值、快照开关
-  · V1 需重启：内核缓存模式、页大小、磁盘容量
-  · V2 研究方向：动态扩容
+- 确认所有接口抽象就位，V2 扩展路径清晰
 
 【Microsoft 总监】
-- IVMemPlugin 插件接口预留（V2+）：
-  · OnMounted/OnUnmounting 生命周期钩子
-  · 示例用例：杀毒排除自动配置、Prometheus 导出、通知集成
-  · V1 仅声明接口，不实现加载器
+- 确认 WinFsp API 陷阱表完整覆盖 7 个已知陷阱
+- 确认 Create/GetFileInfo 回调伪代码完整
+
+【Amazon 总监】
+- 确认故障注入框架与 CI 集成路径
+- 确认 MountAsync 异常安全流程无遗漏
+
+【Oracle 总监】
+- 确认 SetLength/Write/Read 三大核心操作事务语义完整
+- 确认契约检查在 Release 构建中 O(1) 边界全部到位
+
+【审查总结】
+- .review_findings.md 更新：四巨头审查完整记录
+- 99 轮审查 / 9 次提交 / 18 处伪代码修复 / 12 个新增方法 / 15 条新测试
+- 方案和伪代码达到实现就绪状态
