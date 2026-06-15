@@ -246,6 +246,18 @@ Phase 3 — 写锁赋值 + memcpy
 
 ## 4. VMemFileSystem - WinFsp 回调
 
+### 4.0 WinFsp API 陷阱（辩论裁决 R101-R110）
+
+| 陷阱 | 说明 | 应对 |
+|------|------|------|
+| **异常逃逸** | 回调中未捕获异常 → WinFsp 内核崩溃/未定义行为 | 每个回调顶层 try-catch → 返回 STATUS_INTERNAL_ERROR + ERR 日志 |
+| **路径格式** | 回调路径 = `\dir\file.txt`（反斜杠，相对根） | 不要用 `Path.Combine`；手动拼接 |
+| **Mount 阻塞** | `StartDispatcher()` 阻塞直到 `StopDispatcher()` | CLI 在独立线程运行；Service 用 Task.Run |
+| **Dispose 顺序** | StopDispatcher → 等回调完成 → Delete → Dispose 文件树 → Dispose PagePool | 严格顺序，否则 UAF |
+| **FileContext** | WinFsp 透传 `object` FileContext 给所有后续回调 | 存 FileNode 引用；不要存路径（Rename 后失效） |
+| **回调线程** | WinFsp 线程池回调；同一文件可能不同线程 | 所有 FileNode 操作必须线程安全 |
+| **SectorSize 对齐** | Read/Write offset 和 length 已被 WinFsp 对齐到 SectorSize | 用户态无需再对齐 |
+
 ```csharp
 public sealed class VMemFileSystem : IFileSystem
 {

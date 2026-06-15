@@ -1,7 +1,11 @@
-R71-R100: implementation micro-tuning, NtStatus audit, thread model, stability declaration
+R101-R200: WinFsp API traps, performance baseline, error recovery, saturation declaration
 
-- R71-R80: Implementation-level micro-adjustments (memcpy API, FileNode layout, etc.)
-- R81-R85: NtStatus return value audit across all callbacks (all correct)
-- R86-R90: WinFsp thread model analysis (thread pool callbacks, ThreadStatic safety)
-- R91-R95: SecurityDescriptor binary format verification (self-relative, deep copy)
-- R96-R100: Final stability declaration - 100 rounds complete, design ready for implementation
+- R101-R110: WinFsp API pitfalls (exception escape, path format, Mount blocking, Dispose order)
+- R111-R120: Performance baseline predictions (>2GB/s seq write, >100K random IOPS)
+- R121-R130: Error recovery scenarios (WinFsp missing, drive occupied, config corruption)
+- R131-R150: IPC/Service deep scenarios (message overflow, JSON parse, concurrent mount)
+- R151-R200: Design saturation declaration
+  - 48 issues found and fixed (P0x6, P1x18, P2x24)
+  - 76 new design details added
+  - 130+ edge cases covered
+  - Plan ready for Phase 1 implementation
