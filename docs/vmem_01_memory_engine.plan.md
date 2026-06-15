@@ -35,6 +35,9 @@ isProject: false
 ```csharp
 public sealed class PagePool : IDisposable
 {
+    // V1: ConcurrentStack<nint>（简洁可靠）
+    // R42 注意：每 Push/Pop 创建 Node 对象，百万页面时产生 GC 压力
+    // V2 备选：无 GC 的 lock-free stack（NativeMemory 链表或 mpsc queue）
     private readonly ConcurrentStack<nint> _freePages;
     private readonly int _pageSize;          // 默认 4KB，可选 64KB
     private readonly long _maxPages;         // 页数上限 = CapacityBytes / PageSize
@@ -111,9 +114,10 @@ public bool TryReserve(long pageCount)
 
 ### 1.4 内存分配策略
 
-- **惰性分配（默认）**：`TryRent` 时 free stack 空 → `NativeMemory.AllocZeroed` 分配新页 → Interlocked 递增 `_allocatedCount` → 入 free stack → 再 pop
+- **惰性分配（默认）**：`TryRent` 时 free stack 空 → `NativeMemory.AllocZeroed` 分配新页 → Interlocked 递增 `_allocatedCount` → push to free stack → pop
 - **预分配（`PreAllocate=true`）**：构造时一次性分配 `_maxPages` 个页面，全部入 free stack。启动慢但运行时无页错误延迟
 - 达到 `_maxPages` 上限后停止分配 → `TryRent` 返回 `false`
+- **OOM 处理（R41）**：`NativeMemory.AllocZeroed` 抛 `OutOfMemoryException` → `TryRent` 捕获并返回 false（映射 STATUS_DISK_FULL）；ERR 日志记录 allocatedCount + requestedSize
 
 ### 1.5 安全清零
 

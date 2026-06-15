@@ -312,6 +312,30 @@ Close → RefCount--
 CLI 参数：`vmem mount R: --size 1G --cache safe|balanced|fast`（默认 `safe`）。
 Phase 1 验收完成后可改默认为 `balanced` 或 `fast`。
 
+### 5.1.1 FileSystemHost 参数（R43）
+
+```csharp
+var host = new FileSystemHost(fs);
+host.SectorSize = 4096;                    // 与 PageSize 对齐
+host.SectorsPerAllocationUnit = 1;         // 分配单元 = 1 扇区
+host.MaxComponentLength = 255;             // NTFS 兼容
+host.FileInfoTimeout = cacheMode switch {
+    "safe" => 0,
+    "balanced" => 1000,
+    "fast" => uint.MaxValue,
+    _ => 0
+};
+host.CaseSensitiveSearch = false;          // Windows 标准
+host.UnicodeOnDisk = true;
+host.PersistentAcls = true;               // 启用 SD 支持
+host.ReparsePoints = false;               // V1 不支持
+host.NamedStreams = false;                 // V1 不支持
+host.VolumeSerialNumber = 0;              // 随机生成
+host.FlushAndPurgeOnCleanup = false;      // RAM 盘无需 flush
+
+host.Mount(driveLetter);                  // 阻塞直到 StopDispatcher
+```
+
 ### 5.2 缓存失效通知（FspFileSystemNotify）
 
 当 `EnableKernelCache=true` 时，以下操作**必须**在完成后通知内核：

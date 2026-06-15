@@ -1,11 +1,8 @@
-R31-R40: page table growth, Dispose safety, GUI startup, log rotation, phase consistency
+R41-R50: OOM handling, CLI commands, FileSystemHost config, callback details
 
-- R31: PagePool CAS reservation precision analysis (V1 accept minor window)
-- R32: PagedFileContent page table dynamic growth (doubling, write-lock resize)
-- R33: PagePool.Dispose thread safety (Interlocked guard, leak detection)
-- R34-R36: GUI startup sequence, multi-user RDP, theme switching
-- R37-R38: Log rotation V1/V2 split, Serilog AOT-compatible config
-- R39: Phase timeline cross-plan consistency verified
-- R40: Final completeness check (7 items all green)
-- Added AOT gate to CI pipeline
-- Added 8 new edge-case test specifications
+- R41: NativeMemory.AllocZeroed OOM handling (catch + return false)
+- R42: ConcurrentStack GC pressure analysis (V1 accept, V2 native stack)
+- R43: FileSystemHost parameter configuration (SectorSize, PersistentAcls, etc.)
+- R44-R46: CLI command design (mount/status/unmount/version with full args)
+- R47-R49: SecurityDescriptor/Create/Open callback implementation details
+- R50: Full TODO/FIXME scan - zero residual items found

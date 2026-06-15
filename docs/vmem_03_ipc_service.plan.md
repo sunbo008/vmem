@@ -36,12 +36,89 @@ isProject: false
 
 ## 1. 进程模型
 
-| 进程 | 项目 | 运行身份 | 职责 |
-|------|------|----------|------|
-| VMem.Service.exe | VMem.Service | LocalSystem | 承载 WinFsp FS，管理 RAM 盘生命周期，开机自启 |
-| VMem.App.exe | VMem.App | 当前用户 | WPF GUI，通过 Named Pipe 远程控制 Service |
+| 进程 | 项目 | 运行身份 | 职责 | Phase |
+|------|------|----------|------|-------|
+| vmem.exe | VMem.Cli | 当前用户 | CLI 前台挂载/查询，直接调用 Core | **1** |
+| VMem.Service.exe | VMem.Service | LocalSystem | 承载 WinFsp FS，管理 RAM 盘生命周期，开机自启 | 3 |
+| VMem.App.exe | VMem.App | 当前用户 | WPF GUI，通过 Named Pipe 远程控制 Service | 2 |
 
 **关键决策**：FS 运行在 Service 进程中 → GUI 崩溃不影响已挂载磁盘。
+
+---
+
+## 1.1 CLI 工具设计（Phase 1，辩论裁决 R13/R44-R46）
+
+```
+vmem mount <drive> [options]     # 前台阻塞挂载
+vmem status [drive]              # 查看磁盘状态
+vmem unmount <drive>             # 卸载（Phase 3 通过 IPC）
+vmem version                     # 版本信息
+```
+
+### mount 子命令
+
+```
+vmem mount R: --size 2G [--page-size 4|64] [--cache safe|balanced|fast]
+              [--label "My Disk"] [--sddl "D:P(A;;FA;;;IU)"]
+              [--pre-allocate] [--verbose]
+```
+
+| 参数 | 默认值 | 说明 |
+|------|--------|------|
+| `<drive>` | 必需 | 盘符（A:-Z:） |
+| `--size` | 必需 | 容量（支持 K/M/G/T 后缀） |
+| `--page-size` | 4 | 页大小 KB |
+| `--cache` | safe | 缓存模式 |
+| `--label` | "VMem" | 卷标 |
+| `--sddl` | IU 默认 | Root 安全描述符 |
+| `--pre-allocate` | false | 预分配所有页面 |
+| `--verbose` | false | 日志级别切换到 Debug |
+
+**运行模式**：
+- 前台阻塞：`Console.CancelKeyPress` 捕获 Ctrl+C → 优雅卸载（StopDispatcher → Dispose）
+- 退出码：VmErrorCode 映射（0=成功, 1=DiskFull, 2=DriveInUse, 3=InvalidArg, 4=Internal, 130=Ctrl+C）
+
+### status 子命令
+
+```
+vmem status          # 列出所有磁盘
+vmem status R:       # 指定磁盘详情
+vmem status --format json   # JSON 输出（管道友好）
+```
+
+- TTY 检测：`Console.IsOutputRedirected` → true 时自动 JSON 输出
+- 表格格式：Drive | Label | Size | Used | Free | Files | Status
+
+### Phase 1 CLI 架构
+
+```csharp
+// Program.cs
+var root = new RootCommand("VMem RAM Disk");
+root.AddCommand(new MountCommand());
+root.AddCommand(new StatusCommand());
+return await root.InvokeAsync(args);
+
+// MountCommand.cs
+internal sealed class MountCommand : Command
+{
+    public MountCommand() : base("mount", "Mount a RAM disk") { /* options */ }
+
+    public async Task<int> HandleAsync(/* ... */, CancellationToken ct)
+    {
+        var config = new DiskConfig { /* from CLI args */ };
+        using var manager = new RamDiskManager();
+        await manager.MountAsync(config, ct);
+
+        // 阻塞直到 Ctrl+C
+        var tcs = new TaskCompletionSource();
+        Console.CancelKeyPress += (_, e) => { e.Cancel = true; tcs.SetResult(); };
+        await tcs.Task;
+
+        await manager.UnmountAsync(config.DriveLetter, CancellationToken.None);
+        return 0;
+    }
+}
+```
 
 ---
 
