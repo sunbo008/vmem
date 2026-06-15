@@ -485,7 +485,57 @@ public sealed class VMemFileSystem : IFileSystem
     // VolumeLabel, MaxComponentLength = 255
 
     // --- 命名空间 ---
-    NtStatus Create(...);      // 设置 CreationTime/LastAccessTime/LastWriteTime/ChangeTime
+    // Microsoft 审查：Create 回调完整伪代码
+    NtStatus Create(string fileName, uint createOptions, uint grantedAccess,
+        uint fileAttributes, byte[] securityDescriptor, ulong allocationSize,
+        out object fileContext, out FileInfo fileInfo)
+    {
+        try
+        {
+            using var _ = OperationContext.BeginOperation("Create");
+            var parentPath = GetParentPath(fileName);
+            var name = GetFileName(fileName);
+
+            if (name.Length > 255) return NtStatus.STATUS_OBJECT_NAME_INVALID;
+
+            bool isDirectory = (createOptions & FILE_DIRECTORY_FILE) != 0;
+            var node = isDirectory
+                ? FileNode.CreateDirectory(name, securityDescriptor)
+                : FileNode.CreateFile(name, _pool, securityDescriptor);
+
+            node.Attributes = (FileAttributes)fileAttributes;
+
+            var status = _tree.TryCreate(parentPath, node, out var existing);
+            if (status != NtStatus.STATUS_SUCCESS)
+            {
+                node.Dispose();
+                return status;
+            }
+
+            // 如果请求了初始 AllocationSize → 预留
+            if (!isDirectory && allocationSize > 0)
+            {
+                var setLenStatus = node.Content!.SetLength((long)allocationSize);
+                if (setLenStatus != NtStatus.STATUS_SUCCESS)
+                {
+                    _tree.TryRemove(fileName);
+                    node.Dispose();
+                    return setLenStatus;
+                }
+            }
+
+            node.IncrementOpen();
+            fileContext = node;
+            fileInfo = ToFileInfo(node);
+            return NtStatus.STATUS_SUCCESS;
+        }
+        catch (Exception ex)
+        {
+            _logger.Error(ex, "Create failed: {Path}", fileName);
+            fileContext = null!; fileInfo = default;
+            return NtStatus.STATUS_INTERNAL_ERROR;
+        }
+    }
     NtStatus Open(...);
     NtStatus Overwrite(...);   // R52: SetLength(0) + 重置 Attributes + 更新 LWT/CT
                                // 保留 SD 和 CreationTime；FILE_ATTRIBUTE_ARCHIVE 置位
@@ -515,7 +565,26 @@ public sealed class VMemFileSystem : IFileSystem
     // 4. 注意：不返回 STATUS_NO_MORE_FILES；WinFsp 看到 FillEntry 未填满即知结束
 
     // --- 元数据 ---
-    NtStatus GetFileInfo(...);  // AllocationSize = Content?.AllocationSize ?? 0
+    NtStatus GetFileInfo(object fileContext, out FileInfo fileInfo)
+    {
+        var node = (FileNode)fileContext;
+        fileInfo = ToFileInfo(node);
+        return NtStatus.STATUS_SUCCESS;
+    }
+
+    private static FileInfo ToFileInfo(FileNode node)
+    {
+        return new FileInfo
+        {
+            FileAttributes = (uint)node.Attributes,
+            AllocationSize = (ulong)node.AllocationSize,
+            FileSize = (ulong)(node.Content?.FileSize ?? 0),
+            CreationTime = (ulong)node.CreationTime,
+            LastAccessTime = (ulong)node.LastAccessTime,
+            LastWriteTime = (ulong)node.LastWriteTime,
+            ChangeTime = (ulong)node.ChangeTime,
+        };
+    }
     NtStatus SetBasicInfo(...); // 时间戳：0 = 不更新，-1 (UINT64_MAX) = 不更新（R24）
 
     // --- 安全 ---
