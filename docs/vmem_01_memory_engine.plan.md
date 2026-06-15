@@ -44,6 +44,7 @@ public sealed class PagePool : IDisposable
     private long _allocatedCount;            // 已从 OS 分配的总页数（Interlocked）
     private long _rentedCount;               // 当前被文件占用的页数（Interlocked）
     private long _reservedCount;             // SetLength 预留的页数（Interlocked）
+    private long _freeCount;                // free stack 计数器（替代 O(n) ConcurrentStack.Count）
     private int _disposed;
 
     // === 基本操作 ===

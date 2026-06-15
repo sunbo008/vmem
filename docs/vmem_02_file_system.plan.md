@@ -259,18 +259,23 @@ public sealed class PagedFileContent : IDisposable
         if (data.Length == 0) return NtStatus.STATUS_SUCCESS;
 
         // === Phase 1: 读锁扫描缺失页 ===
-        List<int> missingIndices;
+        // Google 审查：用 stackalloc/ArrayPool 替代 new List 减少 GC 压力
+        int startPage = (int)(offset / _pool.PageSize);
+        int endPage = (int)((offset + data.Length - 1) / _pool.PageSize);
+        int spanCount = endPage - startPage + 1;
+        int[]? rentedArr = spanCount > 64 ? ArrayPool<int>.Shared.Rent(spanCount) : null;
+        Span<int> missingBuf = rentedArr != null ? rentedArr.AsSpan(0, spanCount) : stackalloc int[spanCount];
+        int missingCount = 0;
+
         _rwLock.EnterReadLock();
         try
         {
-            missingIndices = new List<int>();
-            int startPage = (int)(offset / _pool.PageSize);
-            int endPage = (int)((offset + data.Length - 1) / _pool.PageSize);
-            EnsurePageTableCapacity(endPage + 1); // 可能扩容
+            EnsurePageTableCapacity(endPage + 1);
             for (int i = startPage; i <= endPage; i++)
-                if (_pageTable[i] == 0) missingIndices.Add(i);
+                if (_pageTable[i] == 0) missingBuf[missingCount++] = i;
         }
         finally { _rwLock.ExitReadLock(); }
+        var missingIndices = missingBuf[..missingCount];
 
         // === Phase 2: 锁外批量分配（BatchLease 保护异常路径）===
         using var batch = _pool.RentBatch(missingIndices.Count);
@@ -310,6 +315,7 @@ public sealed class PagedFileContent : IDisposable
         }
         finally { _rwLock.ExitWriteLock(); }
 
+        if (rentedArr != null) ArrayPool<int>.Shared.Return(rentedArr);
         return NtStatus.STATUS_SUCCESS;
     }
     public NtStatus SetLength(long newLength)

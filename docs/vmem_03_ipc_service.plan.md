@@ -290,13 +290,18 @@ public record ConfigResponse(
 // PipeFraming 工具类（辩论裁决 R15-3）
 public static class PipeFraming
 {
+    // Google 审查：避免 header.ToArray() 堆分配
     public static async Task WriteMessageAsync(PipeStream pipe, ReadOnlyMemory<byte> json, CancellationToken ct)
     {
-        Span<byte> header = stackalloc byte[4];
+        if (json.Length > MaxMessageSize) throw new ArgumentException($"Message too large: {json.Length}");
+        var header = new byte[4]; // 栈上 4 字节可接受；或复用线程本地缓冲
         BinaryPrimitives.WriteInt32BigEndian(header, json.Length);
-        await pipe.WriteAsync(header.ToArray(), ct);  // V2: 改用 Memory 重载
+        await pipe.WriteAsync(header, ct);
         await pipe.WriteAsync(json, ct);
+        await pipe.FlushAsync(ct); // Amazon 审查：确保对端立即收到
     }
+
+    private const int MaxMessageSize = 65536; // 64KB
 
     public static async Task<byte[]?> ReadMessageAsync(PipeStream pipe, int maxSize, CancellationToken ct)
     {

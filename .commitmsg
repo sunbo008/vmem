@@ -1,21 +1,19 @@
-四巨头审查 R11-R20：API契约完整性 — 参数校验、完整伪代码、异常处理
+四巨头审查 R21-R30：性能工程 — 零分配热路径、ArrayPool、PipeFraming优化
 
 【Google 总监】
-- SetLength 截断时最后页内部分清零防信息泄漏
-- Write 三阶段完整伪代码含 EnsurePageTableCapacity
+- Write Phase 1 扫描：stackalloc/ArrayPool 替代 new List<int> 减少 GC
+- Write 方法末尾归还 ArrayPool 租借数组
+- PipeFraming.WriteMessageAsync：消息大小上限检查
 
 【Microsoft 总监】
-- FileNode 工厂方法替代公开构造函数：CreateFile/CreateDirectory
-  确保 Children ConcurrentDictionary 始终用 OrdinalIgnoreCase
-- FileNode 构造时自动设置时间戳和默认 Attributes
+- PagePool 增加 _freeCount 计数器字段声明（替代 O(n) ConcurrentStack.Count）
+- EnsurePageTableCapacity 在读锁内预检
 
 【Amazon 总监】
-- MountCommand 完整异常处理：DriveInUse/OOM/通用异常
-- 最小容量校验（1MB）
-- 用户友好的错误提示和退出码映射
+- PipeFraming 修复 header.ToArray() 堆分配
+- WriteMessageAsync 增加 FlushAsync 确保对端立即收到
+- ReadMessageAsync 增加消息大小上限校验
 
 【Oracle 总监】
-- SetLength 完整伪代码：扩展预留 + 截断释放 + 预留回退
-- PagedFileContent.Dispose 完整伪代码：锁保护 + 逐页归还 + 预留清零
-- SecurityDescriptor Get/Set 深拷贝属性实现
-- Read 完整伪代码已在 R1-10 补充
+- Read 热路径保持读锁全程覆盖，数据安全优先于性能
+- Write Phase 3 中 missingIndices 迭代从 Span 直接读取
