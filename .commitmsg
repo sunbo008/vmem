@@ -1,0 +1,14 @@
+R21-R30: callback details, timestamps, ReadDirectory, error mapping, test coverage
+
+- R21: VMemFileSystem 17 callback audit (GetVolumeInfo, Overwrite, Flush)
+- R22: GetVolumeInfo data flow (FreeSize = Capacity - Used - Reserved)
+- R23: ReadDirectory (marker, dot entries, sorted snapshot)
+- R24: Implicit timestamp updates (Read→LAT, Write→LWT+CT)
+- R25: PagePool allocation strategy (lazy default, PreAllocate opt-in)
+- R26: DiskConfig cross-layer mapping (CLI/IPC/Config)
+- R27: VmErrorCode → NtStatus → CLI exit code mapping table
+- R28: WinFsp feature compatibility matrix (Phase 1 skip list)
+- R29: Service lifecycle state machine
+- R30: Glossary and cross-plan term index
+- New test cases for edge scenarios (R19/R21-R30)
+- AOT gate added to CI pipeline (R18)

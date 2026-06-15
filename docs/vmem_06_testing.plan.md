@@ -90,9 +90,24 @@ isProject: false
 | Lookup_CaseInsensitive | 路径大小写不敏感 |
 | TryCreate_ConcurrentSameName | 并发创建同名只有一个成功 |
 | Rename_CrossDirectory_NoDeadlock | 跨目录 Rename 不死锁 |
+| Rename_CaseOnly_SameDirectory | `FOO→foo` 同目录大小写变更不冲突（R19） |
 | Rename_ReplaceExisting | replaceIfExists 正确替换 |
 | TryRemove_NonEmptyDir_Fails | 非空目录删除失败 |
 | EnumerateDirectory_SnapshotIsolation | 枚举期间并发修改不影响结果 |
+| Children_OrdinalIgnoreCase | ConcurrentDictionary 使用 OrdinalIgnoreCase（R20 P0） |
+
+### 边界场景测试（辩论裁决 R19/R21-R30 新增）
+
+| 测试 | 验证点 |
+|------|--------|
+| ZeroByteFile_ContentNotNull | 0 字节文件 Content != null（R19） |
+| Read_BeyondFileSize_Clamped | Read 超过 FileSize 返回截断数据 |
+| Read_SparseHole_ReturnsZeros | 稀疏区域读取全零填充（R11） |
+| LongPathComponent_Rejected | 组件名 >255 字符被拒绝（R19） |
+| GetVolumeInfo_FreeSize_Matches | FreeSize = Capacity - Used - Reserved（R22） |
+| Overwrite_TruncatesAndResetsTimestamp | Overwrite 截断内容并重置时间戳（R21） |
+| SetBasicInfo_ZeroMeansNoChange | 时间戳=0 表示不更新（R24） |
+| Write_ImplicitTimestampUpdate | Write 后 LastWriteTime/ChangeTime 已更新（R24） |
 
 ---
 
@@ -241,6 +256,15 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - run: dotnet test tests/VMem.Stress.Tests -c Release --filter "Category=Stress"
+
+  aot-gate:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-dotnet@v4
+        with: { dotnet-version: '9.0.x' }
+      - run: dotnet publish src/VMem.Cli -c Release -r win-x64 /p:PublishAot=true
+        # R18: Phase 1 即加 AOT 门禁；PR=build, main=publish
 
   benchmark:
     if: github.ref == 'refs/heads/main'

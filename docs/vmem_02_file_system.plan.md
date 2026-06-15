@@ -234,33 +234,43 @@ public sealed class VMemFileSystem : IFileSystem
     private readonly StatsCollector _stats;
     private readonly FileSystemHost _host;     // 用于 Notify
 
-    // --- 卷信息 ---
+    // --- 卷信息（R21）---
     NtStatus GetVolumeInfo(out VolumeInfo info);
+    // TotalSize = PagePool.TotalCapacityBytes
+    // FreeSize  = TotalCapacityBytes - UsedBytes - ReservedBytes
+    // VolumeLabel, MaxComponentLength = 255
 
     // --- 命名空间 ---
-    NtStatus Create(...);      NtStatus Open(...);
-    NtStatus Overwrite(...);   NtStatus Rename(...);    // → Notify
+    NtStatus Create(...);      // 设置 CreationTime/LastAccessTime/LastWriteTime/ChangeTime
+    NtStatus Open(...);
+    NtStatus Overwrite(...);   // Truncate + 重置 LastWriteTime/ChangeTime（R21）
+    NtStatus Rename(...);      // → Notify（锁外）
 
     // --- 生命周期 ---
-    void Cleanup(...);         // PendingDelete + Notify
-    void Close(...);           // 释放资源
+    void Cleanup(...);         // PendingDelete + Notify（详见 Cleanup/Close 语义）
+    void Close(...);           // RefCount-- → Dispose
 
     // --- 数据 ---
-    NtStatus Read(...);        NtStatus Write(...);     // 三阶段
-    NtStatus Flush(...);       // no-op
+    NtStatus Read(...);        // 隐式更新 LastAccessTime（R24）
+    NtStatus Write(...);       // 三阶段；隐式更新 LastWriteTime + ChangeTime
+    NtStatus Flush(...);       // RAM 盘 = no-op，返回 STATUS_SUCCESS
     NtStatus SetFileSize(...); // SetLength + 预留
 
-    // --- 目录枚举 ---
+    // --- 目录枚举（R23）---
     NtStatus ReadDirectory(...);
+    // 1. Marker == null → 从头开始；Marker != null → 续读（跳过 <= Marker 的条目）
+    // 2. "." 和 ".." 由 WinFsp 自动注入（SectorSize != 0 时），用户态不生成
+    // 3. Children.Values 快照 + 按 Name OrdinalIgnoreCase 排序
+    // 4. 填充 FillEntry 直到缓冲区满；返回 STATUS_SUCCESS（非 STATUS_NO_MORE_FILES）
 
     // --- 元数据 ---
-    NtStatus GetFileInfo(...);  // AllocationSize = 实际页 × 页大小
-    NtStatus SetBasicInfo(...);
+    NtStatus GetFileInfo(...);  // AllocationSize = Content?.AllocationSize ?? 0
+    NtStatus SetBasicInfo(...); // 时间戳：0 = 不更新，-1 (UINT64_MAX) = 不更新（R24）
 
     // --- 安全 ---
-    NtStatus GetSecurity(...);
-    NtStatus SetSecurity(...);
-    NtStatus GetSecurityByName(...);
+    NtStatus GetSecurity(...);       // 返回 SD 深拷贝
+    NtStatus SetSecurity(...);       // 存储 SD 深拷贝
+    NtStatus GetSecurityByName(...); // 路径 Walk 查 node/parent
 
     // --- 可选（Phase 2+）---
     // SetDelete, GetDirInfoByName, GetStreamInfo, GetReparsePoint, SetReparsePoint
