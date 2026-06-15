@@ -158,7 +158,10 @@ public NtStatus Rename(ReadOnlySpan<char> oldPath, ReadOnlySpan<char> newPath, b
 ```csharp
 public sealed class PagedFileContent : IDisposable
 {
-    private nint[] _pageTable;         // 0 = 稀疏未分配
+    private nint[] _pageTable;         // 0 = 稀疏未分配；动态倍增扩容（R32）
+    // 页表扩容：写锁内 Array.Resize 倍增（旧表内容拷贝 + 新槽位=0）
+    // 初始大小 = Math.Max(16, initialCapacity/pageSize)；最大 = int.MaxValue
+    // V1 不缩容（Truncate 只清零页表项，不缩小数组）
     private readonly PagePool _pool;
     // 性能说明：ReaderWriterLockSlim 在高读并发下优于 Monitor，
     // 但在 .NET 9 中 Lock (System.Threading.Lock) 性能也不错。

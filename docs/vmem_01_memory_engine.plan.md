@@ -60,6 +60,14 @@ public sealed class PagePool : IDisposable
     public long ReservedPages => Volatile.Read(ref _reservedCount);
     public long AvailablePages => _maxPages - RentedPages - ReservedPages;
     public int PageSize => _pageSize;
+    public long TotalCapacityBytes => _maxPages * _pageSize;
+
+    // === Dispose（R33）===
+    // Interlocked.Exchange(ref _disposed, 1) 防双释放
+    // 遍历 _freePages 全部 NativeMemory.Free
+    // 检测泄漏：if (rentedCount > 0) ERR 日志 + Debug.Fail
+    // 不变量验证：NoPageLeak + ReservationsConsistent（Dispose 时 O(n)）
+    public void Dispose();
 }
 ```
 

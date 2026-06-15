@@ -469,12 +469,14 @@ public void Replay_Seq42_Write_a_txt()
 
 ### 9.1 策略
 
-| 日志类型 | 文件路径 | 轮转策略 | 保留 |
-|---------|---------|---------|------|
-| JSON 日志 | `%ProgramData%\VMem\logs\vmem-YYYYMMDD.json` | 每天 / 100MB | 7 天 |
-| 文本日志 | `%ProgramData%\VMem\logs\vmem-YYYYMMDD.log` | 每天 / 100MB | 7 天 |
-| 回放日志 | `%ProgramData%\VMem\logs\replay-YYYYMMDD.jsonl` | 每天 / 500MB | 3 天 |
-| 归档 | `%ProgramData%\VMem\logs\archive\` | gzip 压缩 | 30 天 |
+| 日志类型 | 文件路径 | 轮转策略 | 保留 | Phase |
+|---------|---------|---------|------|-------|
+| **JSON 日志** | `%ProgramData%\VMem\logs\vmem-YYYYMMDD.json` | 每天 / 100MB | 7 天 | **V1** |
+| 文本日志 | `%ProgramData%\VMem\logs\vmem-YYYYMMDD.log` | 每天 / 100MB | 7 天 | V2 |
+| 回放日志 | `%ProgramData%\VMem\logs\replay-YYYYMMDD.jsonl` | 每天 / 500MB | 3 天 | V2 |
+| 归档 | `%ProgramData%\VMem\logs\archive\` | gzip 压缩 | 30 天 | V2 |
+
+> **V1**：仅 JSON Sink + Console Sink。Serilog `fileSizeLimitBytes: 104857600`，`retainedFileCountLimit: 7`。
 
 ### 9.2 配置
 
@@ -497,7 +499,7 @@ public void Replay_Seq42_Write_a_txt()
 ```
 src/VMem.Core/Diagnostics/
 ├── VMemLogger.cs            # Serilog 初始化 + 配置
-├── OperationContext.cs       # CorrelationId + AsyncLocal
+├── OperationContext.cs       # CorrelationId + ThreadStatic（R10 裁决）
 ├── Contract.cs              # 前置/后置/不变量检查
 ├── HealthChecker.cs         # 周期性健康检查
 ├── SlowOperationDetector.cs # 慢操作告警
