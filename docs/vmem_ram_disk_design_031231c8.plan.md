@@ -2,197 +2,190 @@
 name: VMem RAM Disk Design
 overview: 设计一款基于 WinFsp 用户态文件系统框架的 Windows RAM Disk 软件，采用 .NET 9 + WPF GUI，借鉴 hooyao/RamDrive 的高性能内存管理和 WinFsp-MemFs-Extended 的动态分配策略。
 todos:
-  - id: phase1-memory
-    content: "Phase 1: 实现 PagePool 内存页池（NativeMemory + ConcurrentStack 无锁设计）"
+  - id: phase1
+    content: "Phase 1: 核心文件系统 MVP → 子方案 ①② 全部完成 + CLI 挂载 + winfsp-tests 合规"
     status: pending
-  - id: phase1-fs
-    content: "Phase 1: 实现 VMemFileSystem（IFileSystem 接口 + DirectoryTree + PagedFileContent）"
+  - id: phase2
+    content: "Phase 2: WPF GUI 应用 → 子方案 ④ 全部完成"
     status: pending
-  - id: phase1-cli
-    content: "Phase 1: 命令行入口 - 挂载/卸载 RAM 盘验证核心逻辑"
+  - id: phase3
+    content: "Phase 3: 服务化与监控 → 子方案 ③ 全部完成 + 实时监控面板"
     status: pending
-  - id: phase2-wpf
-    content: "Phase 2: WPF GUI 主窗口 + MVVM 架构搭建"
+  - id: phase4
+    content: "Phase 4: 高级功能 → 子方案 ⑤⑥ 全部完成"
     status: pending
-  - id: phase2-dialog
-    content: "Phase 2: 创建磁盘对话框（盘符/容量/标签选择）"
-    status: pending
-  - id: phase2-tray
-    content: "Phase 2: 系统托盘图标 + 最小化到托盘"
-    status: pending
-  - id: phase3-service
-    content: "Phase 3: Windows Service 封装，实现开机自动挂载"
-    status: pending
-  - id: phase3-monitor
-    content: "Phase 3: 实时监控面板（内存使用量、I/O 速率图表）"
-    status: pending
-  - id: phase4-persist
-    content: "Phase 4: 关机前内容持久化到磁盘镜像"
-    status: pending
-  - id: phase4-installer
-    content: "Phase 4: Inno Setup 安装包（捆绑 WinFsp 运行时）"
+  - id: phase-logging
+    content: "全程: 日志与可观测性 → 子方案 ⑦ 与 Phase 1 同步启动，贯穿全阶段"
     status: pending
 isProject: false
 ---
 
-# VMem - Windows 内存虚拟硬盘设计方案
+# VMem - Windows 内存虚拟硬盘设计方案（父方案）
 
-## 一、站在巨人肩膀上：核心技术选型
-
-### 1.1 文件系统层：WinFsp（Windows File System Proxy）
-
-**为什么选它：**
-- 业界公认的 Windows 用户态文件系统标准框架（相当于 Linux 的 FUSE）
-- 无需编写内核驱动，不需要 WHQL 驱动签名认证
-- 内核态 FSD + 用户态 DLL 架构，性能接近原生
-- 提供 .NET / C / C++ 多语言 API
-- GitHub 12k+ stars，活跃维护
-
-**学习对象：**
-- [winfsp/winfsp](https://github.com/winfsp/winfsp) - 核心框架
-- [hooyao/winfsp-native](https://github.com/hooyao/winfsp-native) - 零分配、AOT 就绪的 .NET 绑定
-
-### 1.2 内存管理：借鉴 hooyao/RamDrive 的 PagePool 架构
-
-**学习要点：**
-- NativeMemory 页池：所有文件数据存储在 GC 堆外，零 GC 压力
-- 无锁页分配：ConcurrentStack + 批量 TryPopRange/PushRange
-- 按需分配（稀疏文件）：未写入区域不消耗内存
-- 每文件 ReaderWriterLockSlim：并发读不互斥
-
-### 1.3 动态内存策略：借鉴 WinFsp-MemFs-Extended
-
-**学习要点：**
-- 不预分配全部磁盘大小，按实际使用量动态分配
-- 向量化扇区存储，减少碎片
-- 总容量限制而非单文件限制
-
-### 1.4 GUI 框架：WPF（.NET 9）
-
-**为什么选 WPF 而非 WinUI 3：**
-- WPF 更成熟稳定，适合系统工具类应用
-- WinUI 3 的 DependencyProperty 性能问题对数据密集型 UI 不利
-- WPF 在 .NET 9 上完全支持，可与核心逻辑共享同一进程
-- 社区资源丰富，调试工具完善
+> **子方案索引**
+>
+> | # | 子方案 | 文件 | Phase |
+> |---|--------|------|-------|
+> | ① | [内存引擎](./vmem_01_memory_engine.plan.md) | PagePool / PageLease / 容量预留 / StatsCollector | 1 |
+> | ② | [文件系统与 WinFsp 集成](./vmem_02_file_system.plan.md) | VMemFileSystem / DirectoryTree / 三阶段写入 / 安全模型 / 内核缓存 | 1 |
+> | ③ | [IPC 与服务化](./vmem_03_ipc_service.plan.md) | Named Pipe 协议 / Windows Service / 进程模型 | 3 |
+> | ④ | [WPF GUI](./vmem_04_gui.plan.md) | 主窗口 / 创建对话框 / 系统托盘 / 实时监控 | 2-3 |
+> | ⑤ | [持久化与部署](./vmem_05_persistence_deploy.plan.md) | 脏页快照 / .vmem 镜像格式 / Native AOT / 安装包 | 4 |
+> | ⑥ | [测试策略](./vmem_06_testing.plan.md) | 分层测试 / CI / 正确性不变量 / 性能基准 | 全程 |
+> | ⑦ | [日志与可观测性](./vmem_07_logging_observability.plan.md) | 结构化日志 / 关联追踪 / 契约检查 / 健康检查 / AI 摘要 | **全程** |
 
 ---
 
-## 二、系统架构
+## 一、开源生态调研
+
+### 1.1 技术路线分类
+
+| 路线 | 代表框架 | 优势 | 劣势 |
+|------|----------|------|------|
+| **用户态文件系统** | WinFsp, Dokany | 无需内核开发/签名；完全控制 FS 语义 | Disk Manager 不可见 |
+| **用户态块设备** | WinSpd | Disk Manager 可见；用 NTFS 格式化 | 额外 NTFS 开销；Beta 停滞 |
+| **SCSI miniport 驱动** | Arsenal Image Mounter | 最接近真实磁盘 | 需驱动安装；AGPL |
+| **传统内核驱动** | ImDisk, galpt/temp | 最高性能 | 需 WHQL 签名；Win11 兼容差 |
+
+### 1.2 关键开源项目
+
+| 项目　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　| 语言　　 | 框架　　 | GUI　　　| 核心学习点　　　　　　　　　　　　　　　　　　　 |
+| ---------------------------------------------------------------------------| ----------| ----------| ----------| --------------------------------------------------|
+| [hooyao/RamDrive](https://github.com/hooyao/RamDrive)　　　　　　　　　　 | C#　　　 | WinFsp　 | ✗　　　　| **三阶段写入、容量预留、缓存一致性、TLA+**　　　 |
+| [Ceiridge/memefs](https://github.com/Ceiridge/WinFsp-MemFs-Extended)　　　| C++　　　| WinFsp　 | ✗　　　　| **完整 FS 特性（ADS/Reparse/POSIX）、Root SDDL** |
+| [winfsp/memfs](https://github.com/winfsp/winfsp/tree/master/tst/memfs)　　| C　　　　| WinFsp　 | ✗　　　　| **官方参考实现、SD 继承标准写法**　　　　　　　　|
+| [galpt/temp](https://github.com/galpt/temp)　　　　　　　　　　　　　　　 | C++/C#　 | WDK　　　| WPF　　　| **WPF GUI 交互设计（图表/一键创建）**　　　　　　|
+| [tmcdos/ramdisk](https://github.com/tmcdos/ramdisk)　　　　　　　　　　　 | Pascal　 | Arsenal　| Delphi　 | **关机持久化 + 启动恢复流程**　　　　　　　　　　|
+| [LTRData/ImDisk](https://github.com/LTRData/ImDisk)　　　　　　　　　　　 | C　　　　| 自有驱动 | 控制面板 | **反面教材：设计老旧→兼容性灾难**　　　　　　　　|
+| [DavidXanatos/ImDisk](https://github.com/DavidXanatos/ImDisk)　　　　　　 | C　　　　| 自有驱动 | 控制面板 | **Win11 24H2 兼容修复**　　　　　　　　　　　　　|
+| [ArsenalRecon/AIM](https://github.com/ArsenalRecon/Arsenal-Image-Mounter) | C/VB.NET | StorPort | WinForms | **.NET API / NuGet 打包参考**　　　　　　　　　　|
+| [dokan-dev/dokany](https://github.com/dokan-dev/dokany)　　　　　　　　　 | C　　　　| 自有 FSD | ✗　　　　| **WinFsp 竞品对比论据**　　　　　　　　　　　　　|
+| [winfsp/winspd](https://github.com/winfsp/winspd)　　　　　　　　　　　　 | C　　　　| StorPort | ✗　　　　| **块设备路线理解**　　　　　　　　　　　　　　　 |
+
+> 每个项目的详细调研见对应子方案或下方对比表。
+
+---
+
+## 二、核心技术选型
+
+### 2.1 WinFsp（文件系统层）
+
+- 用户态开发，无需驱动签名
+- 启用内核缓存 + Fast I/O 后，缓存读写**超越 NTFS**
+- `hooyao/winfsp-native` 提供零分配 .NET 绑定
+- 已知局限：Disk Manager 不可见（可接受）
+
+### 2.2 NativeMemory 页池（内存管理）
+
+- 借鉴 hooyao/RamDrive 的 PagePool 架构
+- **三阶段写入协议**：页分配移出临界区 → 详见[子方案 ②](./vmem_02_file_system.plan.md)
+- **容量预留系统**：SetLength 原子预留 → 详见[子方案 ①](./vmem_01_memory_engine.plan.md)
+- **PageLease 安全租借**：异常路径自动归还 → 详见[子方案 ①](./vmem_01_memory_engine.plan.md)
+
+### 2.3 WinFsp 内核缓存
+
+- 默认 `FileInfoTimeout=1000`（元数据缓存），可选 `uint.MaxValue`（完整数据缓存 + Fast I/O）
+- 路径变更后调用 `FspFileSystemNotify` 失效缓存 → 详见[子方案 ②](./vmem_02_file_system.plan.md)
+
+### 2.4 WPF（.NET 9 GUI）
+
+- 成熟稳定，适合系统工具类应用 → 详见[子方案 ④](./vmem_04_gui.plan.md)
+
+---
+
+## 三、系统架构
 
 ```mermaid
 graph TB
-    subgraph UserInterface [GUI Layer - WPF]
+    subgraph UserInterface ["GUI Layer - WPF (VMem.App)"]
         MainWindow[主窗口]
         TrayIcon[系统托盘图标]
         Settings[设置面板]
         Monitor[实时监控面板]
     end
 
-    subgraph CoreService [Core Service Layer]
+    subgraph IPC ["IPC Layer - Named Pipes"]
+        PipeServer["PipeServer (Service 端)"]
+        PipeClient["PipeClient (GUI 端)"]
+    end
+
+    subgraph CoreService ["Core Service Layer (VMem.Core)"]
         RamDiskManager[RamDiskManager - 磁盘生命周期管理]
         ConfigStore[ConfigStore - JSON配置持久化]
-        WinServiceHost[Windows Service Host - 开机自启]
+        SnapshotManager[SnapshotManager - 脏页增量快照]
     end
 
-    subgraph FileSystem [File System Layer]
+    subgraph FileSystem ["File System Layer"]
         VMemFileSystem["VMemFileSystem (IFileSystem)"]
-        DirectoryTree[DirectoryTree - 目录/文件元数据]
-        PagedFileContent[PagedFileContent - 分页文件内容]
+        DirectoryTree["DirectoryTree - ConcurrentDictionary 目录树"]
+        FileNode["FileNode - 元数据 + SecurityDescriptor"]
+        PagedFileContent[PagedFileContent - 三阶段写入 + 稀疏分页]
     end
 
-    subgraph MemoryEngine [Memory Engine Layer]
-        PagePool[PagePool - NativeMemory页池]
-        MemoryAllocator[MemoryAllocator - 按需分配/回收]
-        StatsCollector[StatsCollector - 内存使用统计]
+    subgraph Diagnostics ["Diagnostics Layer (L3 可观测性)"]
+        VMemLogger["VMemLogger - Serilog 结构化日志"]
+        OpContext["OperationContext - CorrelationId 全链路追踪"]
+        ContractCheck["Contract - 前置/后置/不变量检查"]
+        HealthCheck["HealthChecker - 30s 周期性自诊断"]
+    end
+
+    subgraph MemoryEngine ["Memory Engine Layer"]
+        PagePool["PagePool - NativeMemory 页池 + 容量预留"]
+        PageLease["PageLease - IDisposable 安全租借"]
+        StatsCollector[StatsCollector - 内存/IO 统计]
     end
 
     subgraph Platform [Platform Layer]
-        WinFsp[WinFsp Kernel Driver]
+        WinFsp[WinFsp Kernel Driver + Cache Manager]
         WinFspNative["WinFsp.Native NuGet"]
+        FspNotify["FspFileSystemNotify - 缓存失效"]
         WindowsAPI[Windows API]
+        WinServiceHost["Windows Service Host"]
     end
 
-    MainWindow --> RamDiskManager
-    TrayIcon --> RamDiskManager
-    Monitor --> StatsCollector
-    Settings --> ConfigStore
+    MainWindow --> PipeClient
+    TrayIcon --> PipeClient
+    Monitor --> PipeClient
+    Settings --> PipeClient
+
+    PipeClient -.->|Named Pipe| PipeServer
+    PipeServer --> RamDiskManager
+    PipeServer --> StatsCollector
+    PipeServer --> ConfigStore
 
     RamDiskManager --> VMemFileSystem
-    RamDiskManager --> WinServiceHost
+    RamDiskManager --> SnapshotManager
     ConfigStore --> RamDiskManager
 
     VMemFileSystem --> DirectoryTree
+    DirectoryTree --> FileNode
     VMemFileSystem --> PagedFileContent
     PagedFileContent --> PagePool
-    PagePool --> MemoryAllocator
-    MemoryAllocator --> StatsCollector
+    PagedFileContent --> PageLease
+    PagePool --> StatsCollector
+
+    VMemFileSystem --> OpContext
+    PagePool --> ContractCheck
+    PagedFileContent --> ContractCheck
+    StatsCollector --> VMemLogger
+    HealthCheck --> PagePool
+    HealthCheck --> VMemLogger
 
     VMemFileSystem --> WinFspNative
+    VMemFileSystem --> FspNotify
     WinFspNative --> WinFsp
+    FspNotify --> WinFsp
+    WinServiceHost --> RamDiskManager
     WinServiceHost --> WindowsAPI
 ```
 
----
-
-## 三、核心模块设计
-
-### 3.1 内存引擎（Memory Engine）
-
-```csharp
-// 页池 - 学习自 hooyao/RamDrive
-public sealed class PagePool : IDisposable
-{
-    private readonly ConcurrentStack<nint> _freePages;
-    private readonly int _pageSize;      // 默认 64KB
-    private readonly int _maxPages;      // 容量上限
-    private int _allocatedCount;         // CAS 原子计数
-
-    public nint Rent();                  // O(1) 无锁获取
-    public void Return(nint page);       // O(1) 无锁归还
-    public int RentBatch(Span<nint> pages); // 批量获取
-}
-
-// 分页文件内容 - 稀疏分配
-public sealed class PagedFileContent
-{
-    private nint[] _pageTable;           // 页表：index -> 原生内存指针
-    private readonly PagePool _pool;
-    private ReaderWriterLockSlim _lock;
-
-    public int Read(long offset, Span<byte> buffer);
-    public int Write(long offset, ReadOnlySpan<byte> data);
-    public void SetLength(long newLength);
-}
-```
-
-### 3.2 文件系统层（File System）
-
-```csharp
-// 实现 WinFsp.Native 的 IFileSystem 接口
-public sealed class VMemFileSystem : IFileSystem
-{
-    private readonly DirectoryTree _tree;
-    private readonly PagePool _pool;
-
-    // WinFsp 回调
-    public NtStatus Create(string fileName, CreateOptions options, ...);
-    public NtStatus Read(object fileNode, Memory<byte> buffer, ...);
-    public NtStatus Write(object fileNode, ReadOnlyMemory<byte> buffer, ...);
-    public NtStatus GetVolumeInfo(out VolumeInfo info);
-    // ... 其他 30+ 文件系统操作
-}
-```
-
-### 3.3 GUI 主要功能
-
-| 功能 | 说明 |
-|------|------|
-| 创建/删除虚拟盘 | 选择盘符(A-Z)、设置容量、文件系统名 |
-| 实时监控 | 已用/总容量、文件数、I/O 速率图表 |
-| 自动挂载 | 开机自动创建指定配置的 RAM 盘 |
-| 系统托盘 | 最小化到托盘，右键快速管理 |
-| 内容持久化(可选) | 关机前将内容保存到磁盘镜像 |
-| 文件夹映射 | 将 TEMP/浏览器缓存等映射到 RAM 盘 |
+**架构与子方案映射**：
+- Memory Engine Layer → [子方案 ①](./vmem_01_memory_engine.plan.md)
+- File System Layer → [子方案 ②](./vmem_02_file_system.plan.md)
+- IPC Layer + Core Service + Platform → [子方案 ③](./vmem_03_ipc_service.plan.md)
+- GUI Layer → [子方案 ④](./vmem_04_gui.plan.md)
+- SnapshotManager → [子方案 ⑤](./vmem_05_persistence_deploy.plan.md)
+- Diagnostics Layer → [子方案 ⑦](./vmem_07_logging_observability.plan.md)
 
 ---
 
@@ -201,41 +194,54 @@ public sealed class VMemFileSystem : IFileSystem
 ```
 vmem/
 ├── src/
-│   ├── VMem.Core/              # 核心库（.NET 9 类库）
-│   │   ├── Memory/
+│   ├── VMem.Core/                   # 核心库（.NET 9 类库）
+│   │   ├── Memory/                  # → 子方案 ①
 │   │   │   ├── PagePool.cs
+│   │   │   ├── PageLease.cs
 │   │   │   ├── PagedFileContent.cs
-│   │   │   └── MemoryAllocator.cs
-│   │   ├── FileSystem/
+│   │   │   └── StatsCollector.cs
+│   │   ├── FileSystem/              # → 子方案 ②
 │   │   │   ├── VMemFileSystem.cs
 │   │   │   ├── DirectoryTree.cs
 │   │   │   └── FileNode.cs
-│   │   ├── Service/
+│   │   ├── Service/                 # → 子方案 ③
 │   │   │   ├── RamDiskManager.cs
 │   │   │   └── ConfigStore.cs
-│   │   └── Stats/
-│   │       └── StatsCollector.cs
-│   ├── VMem.App/               # WPF GUI 应用
+│   │   ├── Diagnostics/             # → 子方案 ⑦
+│   │   │   ├── VMemLogger.cs
+│   │   │   ├── OperationContext.cs
+│   │   │   ├── Contract.cs
+│   │   │   ├── HealthChecker.cs
+│   │   │   └── DigestWriter.cs
+│   │   ├── Snapshot/                # → 子方案 ⑤
+│   │   │   └── SnapshotManager.cs
+│   │   └── Ipc/                     # → 子方案 ③
+│   │       ├── IpcProtocol.cs
+│   │       ├── PipeServer.cs
+│   │       └── PipeClient.cs
+│   ├── VMem.App/                    # → 子方案 ④
 │   │   ├── Views/
-│   │   │   ├── MainWindow.xaml
-│   │   │   ├── CreateDiskDialog.xaml
-│   │   │   └── MonitorView.xaml
 │   │   ├── ViewModels/
-│   │   │   ├── MainViewModel.cs
-│   │   │   ├── DiskViewModel.cs
-│   │   │   └── MonitorViewModel.cs
 │   │   ├── Services/
-│   │   │   └── TrayIconService.cs
 │   │   └── App.xaml
-│   └── VMem.Service/           # Windows Service（开机自启）
-│       └── VMemWorker.cs
-├── tests/
+│   └── VMem.Service/                # → 子方案 ③
+│       ├── VMemWorker.cs
+│       └── ServiceInstaller.cs
+├── tests/                           # → 子方案 ⑥
 │   ├── VMem.Core.Tests/
-│   └── VMem.Integration.Tests/
-├── installer/                  # Inno Setup 安装包
+│   ├── VMem.Integration.Tests/
+│   └── VMem.Benchmarks/
+├── installer/                       # → 子方案 ⑤
 │   └── vmem-setup.iss
 ├── docs/
-│   └── design.md
+│   ├── vmem_ram_disk_design_*.plan.md       # 本文（父方案）
+│   ├── vmem_01_memory_engine.plan.md        # 子方案 ①
+│   ├── vmem_02_file_system.plan.md          # 子方案 ②
+│   ├── vmem_03_ipc_service.plan.md          # 子方案 ③
+│   ├── vmem_04_gui.plan.md                  # 子方案 ④
+│   ├── vmem_05_persistence_deploy.plan.md   # 子方案 ⑤
+│   ├── vmem_06_testing.plan.md              # 子方案 ⑥
+│   └── vmem_07_logging_observability.plan.md # 子方案 ⑦
 ├── VMem.sln
 └── README.md
 ```
@@ -250,41 +256,111 @@ vmem/
 | CommunityToolkit.Mvvm | 8.x | WPF MVVM 框架 |
 | LiveChartsCore.SkiaSharpView.WPF | 2.x | I/O 速率实时图表 |
 | Hardcodet.NotifyIcon.Wpf | 1.x | 系统托盘图标 |
-| System.Text.Json | built-in | 配置序列化 |
+| System.Text.Json | built-in | 配置 / IPC 序列化 |
 | Microsoft.Extensions.Hosting | 9.x | 通用主机（DI + 服务生命周期） |
+| BenchmarkDotNet | 0.14.x | 性能基准测试 |
+| Serilog + Sinks | 4.x | 结构化日志（→ 子方案 ⑦） |
+
+**运行时依赖**：[WinFsp](https://winfsp.dev/rel/) 2.x
 
 ---
 
-## 六、与开源项目的对比定位
+## 六、开源生态全景对比
 
-| 项目 | 语言 | GUI | 动态分配 | 服务化 | 本项目学习点 |
-|------|------|-----|----------|--------|------------|
-| hooyao/RamDrive | C# | 无 | 是 | 是(Windows Service) | PagePool架构、零GC设计、Native AOT |
-| WinFsp-MemFs-Extended | C++ | 无 | 是 | 否 | 动态扇区向量、总容量限制策略 |
-| ERAM | C | 有(控制面板) | 否 | 驱动级 | 经典驱动架构参考（不采用） |
-| galpt/temp | C++/C# | 有 | 是 | 驱动级 | GUI交互设计参考 |
-| **VMem (本项目)** | **C#** | **WPF** | **是** | **是** | 综合以上优点 + 现代GUI |
+### 6.1 技术路线对比
+
+| 维度 | WinFsp (本项目) | WinSpd | Arsenal | 内核驱动 (ImDisk) |
+|------|-----------------|--------|---------|------------------|
+| 开发难度 | ★★☆ | ★★☆ | ★★★ | ★★★★ |
+| 性能 | ★★★★ Fast I/O | ★★★ | ★★★★ | ★★★★★ |
+| Disk Manager | ✗ | ✓ | ✓ | ✗ |
+| 驱动签名 | 不需要 | 不需要 | 已签名 | **需要 WHQL** |
+| .NET 绑定 | winfsp-native (AOT) | 无 | VB.NET | 无 |
+| 许可证 | GPL+FLOSS | GPL+FLOSS | **AGPL** | GPL-2.0 |
+| 活跃度 (2026) | ★★★★★ | ★ | ★★★ | ★★ |
+
+### 6.2 项目级对比
+
+| 项目 | 框架 | GUI | 三阶段写入 | 容量预留 | 内核缓存 | 安全模型 | 持久化 | AOT |
+|------|------|-----|-----------|---------|----------|---------|--------|-----|
+| hooyao/RamDrive | WinFsp | ✗ | ✓ | ✓ | ✓ Notify | 基础 | ✗ | ✓ |
+| Ceiridge/memefs | WinFsp | ✗ | ✗ | ✗ | ✓ -f | 完整 SD | ✗ | - |
+| galpt/temp | WDK | WPF | ✗ | ✗ | 内核级 | 内核级 | ✗ | ✗ |
+| tmcdos/ramdisk | Arsenal | Delphi | ✗ | ✗ | 内核级 | NTFS | ✓ | ✗ |
+| ImDisk | 自有驱动 | 控制面板 | ✗ | ✗ | 内核级 | 驱动级 | ✓ | ✗ |
+| **VMem** | **WinFsp** | **WPF** | **✓** | **✓** | **✓ Notify** | **WinFsp SD** | **✓ 增量** | **Phase 4** |
 
 ---
 
-## 七、开发路线（分阶段）
+## 七、开发路线
 
-**Phase 1 - 核心文件系统（MVP）**
-- 实现 PagePool + PagedFileContent
-- 实现 VMemFileSystem（基本文件 CRUD）
-- 命令行挂载/卸载
+### Phase 1 - 核心文件系统（MVP）
 
-**Phase 2 - GUI 应用**
-- WPF 主窗口 + MVVM
-- 创建/删除磁盘对话框
-- 系统托盘最小化
+| 任务 | 子方案 | 验收标准 |
+|------|--------|----------|
+| PagePool + PageLease + 容量预留 | ① | 分配/归还/耗尽/预留竞态通过；泄漏检测 |
+| PagedFileContent（三阶段写入） | ①② | 顺序/随机读写；稀疏；TOCTOU |
+| DirectoryTree + FileNode | ② | 并发创建/删除/重命名无死锁 |
+| VMemFileSystem 全部必要回调 | ② | winfsp-tests 合规 |
+| 内核缓存 + Notify | ② | Rename/Delete 后读取一致 |
+| 安全模型 | ② | SD 存储/继承/查询正确 |
+| CLI 挂载工具 | ③ | `vmem mount R: --size 1G` 可用 |
+| 日志基础设施 + 契约系统 | ⑦ | Serilog JSON 输出 + CorrelationId 全链路 + Contract 检查 |
 
-**Phase 3 - 服务化与监控**
-- Windows Service 开机自启
-- 实时 I/O 监控图表
-- 配置持久化
+### Phase 2 - GUI 应用
 
-**Phase 4 - 高级功能**
-- 关机前内容持久化到镜像文件
-- TEMP/浏览器缓存文件夹映射
-- 安装包打包（Inno Setup，捆绑 WinFsp）
+| 任务 | 子方案 | 验收标准 |
+|------|--------|----------|
+| WPF 主窗口 + MVVM | ④ | 展示已挂载磁盘列表 |
+| 创建磁盘对话框 | ④ | 盘符/容量/页大小/缓存 |
+| 系统托盘 | ④ | 最小化到托盘 |
+
+### Phase 3 - 服务化与监控
+
+| 任务 | 子方案 | 验收标准 |
+|------|--------|----------|
+| Named Pipe IPC | ③ | 跨进程通信 + PipeSecurity |
+| Windows Service | ③ | 开机自启；GUI 崩溃不影响磁盘 |
+| 实时监控 | ④ | I/O 速率图；1 秒刷新 |
+| 配置持久化 | ③ | JSON 自动挂载列表 |
+
+### Phase 4 - 高级功能
+
+| 任务 | 子方案 | 验收标准 |
+|------|--------|----------|
+| 脏页增量快照 | ⑤ | 5 分钟周期；启动恢复；preshutdown |
+| TEMP/缓存映射 | ⑤ | Junction 映射/卸载恢复 |
+| Native AOT | ⑤ | CLI 单文件可执行 |
+| 安装包 | ⑤ | Inno Setup；捆绑 WinFsp |
+
+---
+
+## 八、错误处理与 NtStatus 映射
+
+| 场景 | NtStatus | 说明 |
+|------|----------|------|
+| 内存池耗尽 | `STATUS_DISK_FULL` | TryRent / TryReserve false |
+| 文件已存在 | `STATUS_OBJECT_NAME_COLLISION` | TryAdd false |
+| 文件不存在 | `STATUS_OBJECT_NAME_NOT_FOUND` | Lookup null |
+| 目录非空 | `STATUS_DIRECTORY_NOT_EMPTY` | Children > 0 |
+| 路径无效 | `STATUS_OBJECT_NAME_INVALID` | 解析失败 |
+| 访问被拒 | `STATUS_ACCESS_DENIED` | 内核 SD 判断 |
+| 共享冲突 | `STATUS_SHARING_VIOLATION` | 内核处理 |
+| NativeMemory OOM | `STATUS_INSUFFICIENT_RESOURCES` | AllocZeroed 失败 |
+| 内部异常 | `STATUS_UNEXPECTED_IO_ERROR` | catch-all |
+| 容量预留超限 | `STATUS_DISK_FULL` | TryReserve false |
+
+---
+
+## 九、文件系统元数据规格
+
+| 属性 | 值 | 说明 |
+|------|-----|------|
+| 文件系统名称 | `VMEM` | GetVolumeInfo |
+| 卷标 | 用户自定义 | 默认 "VMem RAM Disk" |
+| 扇区大小 | 512 bytes | WinFsp 标准 |
+| 分配单元 | PageSize | 默认 4096 |
+| 最大文件名 | 255 字符 | NTFS 兼容 |
+| 大小写 | 不敏感 | OrdinalIgnoreCase |
+| 硬链接 / 符号链接 / ADS | Phase 1 不支持 | 可扩展（memefs 已实现） |
+| TRIM/Discard | 支持 | 立即归还页面 |
