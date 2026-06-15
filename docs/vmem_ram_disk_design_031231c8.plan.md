@@ -219,6 +219,10 @@ vmem/
 │   │       ├── IpcProtocol.cs
 │   │       ├── PipeServer.cs
 │   │       └── PipeClient.cs
+│   ├── VMem.Cli/                    # Phase 1 CLI 工具（辩论裁决 R13）
+│   │   ├── Program.cs               # System.CommandLine 入口
+│   │   ├── MountCommand.cs          # mount 子命令（前台阻塞 + Ctrl+C 优雅卸载）
+│   │   └── StatusCommand.cs         # status 子命令（TTY=table / 管道=json）
 │   ├── VMem.App/                    # → 子方案 ④
 │   │   ├── Views/
 │   │   ├── ViewModels/
@@ -258,6 +262,7 @@ vmem/
 | Hardcodet.NotifyIcon.Wpf | 1.x | 系统托盘图标 |
 | System.Text.Json | built-in | 配置 / IPC 序列化 |
 | Microsoft.Extensions.Hosting | 9.x | 通用主机（DI + 服务生命周期） |
+| System.CommandLine | 2.x | CLI 参数解析（辩论裁决 R13） |
 | BenchmarkDotNet | 0.14.x | 性能基准测试 |
 | Serilog + Sinks | 4.x | 结构化日志（→ 子方案 ⑦） |
 
@@ -296,13 +301,18 @@ vmem/
 
 ### Phase 1 - 核心文件系统（MVP）— 4 周，CLI 单进程
 
-> **关键决策（经 10 轮 Agent 辩论确定）**：
+> **关键决策（经 20 轮 Agent 辩论确定）**：
 > - Phase 1 = **CLI 单进程挂载**，不含 Service/GUI/IPC
+> - CLI 框架 = System.CommandLine 2.x；前台阻塞 + CancelKeyPress 优雅卸载（R13）
+> - 退出码：VmErrorCode→0-7 + 130=Ctrl+C + 2=用法错误（R13）
 > - 默认 `EnableKernelCache=false`（Safe 模式），Notify 代码同期实现但守卫
 > - winfsp-tests 对已支持特性 **100% 通过**；不支持特性 **explicit skip**
 > - 日志 V1 = 单 JSON Sink + Warning 默认 + ThreadStatic CorrelationId
 > - Contract Release 仅 O(1) 边界检查；O(n) 改采样或 Dispose 时
 > - Config V1 = CLI 参数，无 config.json
+> - Children ConcurrentDictionary 必须 OrdinalIgnoreCase（R19/R20 P0）
+> - 0 字节文件 = Content 非 null 空实例（R19）
+> - AOT CI 门禁从 Phase 1 开始（R18）
 
 | 周次 | 任务 | 子方案 | 验收标准 |
 |------|------|--------|----------|

@@ -52,8 +52,12 @@ public sealed class FileNode : IDisposable
     // 安全描述符（self-relative 二进制，GetSecurityDescriptorLength 获取长度）
     public byte[] SecurityDescriptor { get; set; }
 
-    public PagedFileContent? Content { get; }               // 文件节点
-    public ConcurrentDictionary<string, FileNode>? Children { get; }  // 目录节点
+    // 文件/目录规则（辩论裁决 R19-1）：
+    //   目录：Content=null, Children!=null
+    //   文件（含 0 字节）：Content!=null, Children=null
+    public PagedFileContent? Content { get; }
+    public ConcurrentDictionary<string, FileNode>? Children { get; }
+    // Children 构造时必须传入 StringComparer.OrdinalIgnoreCase（辩论裁决 R19-3/R20 P0）
 
     private int _openCount;
     public int IncrementOpen() => Interlocked.Increment(ref _openCount);
@@ -169,7 +173,12 @@ public sealed class PagedFileContent : IDisposable
     private long _allocationSize;  // 增量维护，O(1) 读取
     public long AllocationSize => Volatile.Read(ref _allocationSize);
 
+    // Read（辩论裁决 R11）：读锁全程覆盖 clamp + memcpy，防止并发 Truncate UAF
+    // 稀疏页（pageTable==0）零填充而非跳过
     public int Read(long offset, Span<byte> buffer);
+
+    // Write（辩论裁决 R11）：外层逐页循环 + 内层 NativeMemory.Copy；禁止跨页 CopyBlock
+    // Phase 3 事务：FileSize=max + AllocationSize 增量 + 页表 commit 在同一写锁内
     public NtStatus Write(long offset, ReadOnlySpan<byte> data, out int bytesWritten);
     public NtStatus SetLength(long newLength);
     public void Dispose();
@@ -469,3 +478,17 @@ _logger.Debug("FspNotify {Action} path={Path}", "Delete", deletedPath);
 | `NotifyAfterMutation` | Rename/Delete/Overwrite 后 | `FspNotify` 已调用（EnableKernelCache 时） |
 | `NoOrphanNodes` | TryRemove 完成后 | 被删节点不在任何父目录 Children 中 |
 | `OpenCountNonNegative` | DecrementOpen 后 | `_openCount >= 0` |
+
+---
+
+## 8. 边界场景（辩论裁决 R19）
+
+| 场景 | 处理策略 |
+|------|---------|
+| **0 字节文件** | `PagedFileContent` 非 null 空实例（`Content!=null, _pageTable` 长度=0）；不能用 `Content==null` 判断"无内容" |
+| **超长路径** | V1 限制组件名 ≤255 字符、全路径 ≤1024 字符；`Create/Rename` 入口校验，`Notify stackalloc char[260]` 须 guard |
+| **大小写 Rename** | 同目录改名 `FOO→foo` 需 `ConcurrentDictionary(OrdinalIgnoreCase)` 保证不冲突 |
+| **创建-删除-创建** | Delete-on-close 名称占用窗口是设计（非 bug）；`PendingDelete=true` 时 `Create` 同名返回冲突 |
+| **4GB 单文件** | `long` 页索引 + `int[]` 页表 + `EnsurePageTableCapacity` 倍增；V1 最大 = PagePool 容量 |
+| **kill -9** | OS 回收 NativeMemory；数据全丢符合 RAM 盘语义；无需 finalizer 兜底 |
+| **Read 超出 FileSize** | `Math.Min(bytesToRead, FileSize - offset)` clamp；不返回未初始化内存 |

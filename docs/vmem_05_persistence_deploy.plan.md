@@ -171,11 +171,21 @@ hooyao/RamDrive 已验证 WinFsp.Native + Native AOT 的可行性：
 | JIT 延迟 | 首次回调有冷启动 | 零 |
 | 运行时依赖 | .NET 9 Runtime | 无 |
 
-**VMem AOT 规划**：
-- `VMem.Cli` 项目优先支持 AOT — Service 场景受益最大
-- WPF GUI **不支持** Native AOT（WPF 依赖反射），保持框架依赖发布
-- `System.Text.Json` 必须使用 **Source Generator** 而非反射序列化
+**VMem AOT 演进路线（辩论裁决 R18）**：
+
+| Phase | 项目 | 发布方式 | 说明 |
+|-------|------|---------|------|
+| P1 | VMem.Core + VMem.Cli | **AOT CI 门禁**（build only） | 保证代码 AOT 兼容 |
+| P3 | VMem.Service | 框架依赖 + ReadyToRun | 启动快 + 无需独立 Runtime |
+| P4 | VMem.Cli + VMem.Service | **Native AOT 单文件** | 零依赖部署 |
+| 全期 | VMem.App (WPF) | 框架依赖，**不 Trim 不 AOT** | WPF 依赖反射 |
+
+**AOT 约束**：
 - `VMem.Core` 标记 `IsAotCompatible = true`
+- WinFsp 绑定使用 `WinFsp.Native`（非反射）
+- `System.Text.Json` 必须使用 **Source Generator**（`IpcJsonContext`）
+- `Serilog` 配置禁止使用反射 Sink（`ReadFrom.Configuration` → 手动 `WriteTo`）
+- CI 门禁：PR=`dotnet build /p:PublishAot=true`，main=`dotnet publish -r win-x64 /p:PublishAot=true`
 
 ---
 
@@ -214,7 +224,7 @@ hooyao/RamDrive 已验证 WinFsp.Native + Native AOT 的可行性：
    → 写入 HKCU\Software\Microsoft\Windows\CurrentVersion\Run
 ```
 
-### 升级行为
+### 升级行为（辩论裁决 R17）
 
 ```
 1. sc stop VMem                             → 停止 Service（触发快照+卸载序列）
@@ -225,6 +235,22 @@ hooyao/RamDrive 已验证 WinFsp.Native + Native AOT 的可行性：
 6. 替换 %ProgramFiles%\VMem\ 下的程序文件
 7. sc start VMem                             → 启动新版 Service（自动恢复磁盘）
 ```
+
+**配置迁移**（R17-3）：
+- `config.json` 包含 `schemaVersion` 字段
+- `ConfigStore.Load()` 检测版本差异 → 执行 `IConfigMigrator` 链 → 就地 Save 写回
+- 迁移日志记录旧/新 schema 版本
+
+**ACL 权限**（R17-4）：
+
+| 路径 | 权限 |
+|------|------|
+| `%ProgramFiles%\VMem\` | 标准 ProgramFiles ACL（Admin 写、Users 读执行） |
+| `%ProgramData%\VMem\` | SYSTEM + Administrators 完全控制；Users 读+执行 |
+| `config.json` | 继承 ProgramData ACL |
+| `logs\` | 继承 ProgramData ACL |
+
+**WinFsp 检测**（R17-1）：安装器启动时检测 WinFsp → 未安装则从嵌入资源解压 MSI 静默安装；禁止纯拒绝或在线下载。
 
 ### 卸载
 

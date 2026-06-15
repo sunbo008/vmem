@@ -51,7 +51,7 @@ isProject: false
 
 ```
 管道名: \\.\pipe\vmem-control-v1
-协议:   请求-响应，消息以换行分隔的 JSON
+协议:   请求-响应，4字节 BE 长度前缀 + JSON（辩论裁决 R15-3）
 ```
 
 **三层认证（无 HMAC）**：
@@ -70,26 +70,38 @@ isProject: false
 | 全局 per-connection | **20 req/s，burst 40** | 正常 GUI 绰绰有余 |
 | 写操作 per-connection | **2 req/s，burst 5** | GUI debounce 300ms 天然合规 |
 | 并发连接 | **8** | 多用户 RDP 够用 |
-| 超限行为 | 返回 `{Success:false, Error:"RateLimited"}`，连续 10 次超限才断开 | |
+| 超限行为 | 返回 `IpcResponse(RateLimited)`，连续 10 次超限才断开 | |
 
-### 2.2 消息协议
+### 2.2 消息协议（辩论裁决 R15：长度前缀 + DiskConfig 引用）
+
+**Wire 分帧**（R15-3）：`[4字节 BE 长度][JSON UTF-8 body]`，body ≤ 64KB。废弃换行分隔。
 
 ```csharp
+[JsonPolymorphic(TypeDiscriminatorPropertyName = "type")]
+[JsonDerivedType(typeof(CreateDiskRequest), "CreateDisk")]
+[JsonDerivedType(typeof(RemoveDiskRequest), "RemoveDisk")]
+// ... 其他 derived types
 public record IpcMessage(string Type)
 {
-    public string RequestId { get; init; } = "";  // L3 追踪字段
+    public string RequestId { get; init; } = "";
 }
 
-// ─── 磁盘生命周期 ───
+// ─── 磁盘生命周期（R15-1：引用 DiskConfig 而非扁平 11 字段）───
+public record ClientDiskConfig  // IPC 入站 DTO，无 CreatorSid
+{
+    public required string DriveLetter { get; init; }
+    public required long CapacityBytes { get; init; }
+    public string Label { get; init; } = "VMem RAM Disk";
+    public DiskPerformanceOptions Performance { get; init; } = new();
+    public DiskSecurityOptions Security { get; init; } = new();
+    public DiskSnapshotOptions Snapshot { get; init; } = new();
+}
+
 public record CreateDiskRequest(
-    string DriveLetter, long CapacityBytes, int PageSizeKB,
-    string Label, bool EnableKernelCache, int FileInfoTimeoutMs,
-    bool PreAllocate, string? RootSddl,
-    bool AutoMount,                     // ← 是否写入自动挂载列表
-    bool EnableSnapshot,                // ← 是否启用快照
-    string? SnapshotImagePath,          // ← 快照镜像路径
-    int SnapshotIntervalMinutes         // ← 快照周期
+    ClientDiskConfig Config,
+    bool AddToAutoMount
 ) : IpcMessage("CreateDisk");
+// Service 处理时：config.ToDiskConfig(ctx.CallerSid) → MountAsync
 
 public record RemoveDiskRequest(
     string DriveLetter,
@@ -123,29 +135,76 @@ public record UpdateGlobalSettingsRequest(
     string? LogLevel                    // 运行时日志级别切换
 ) : IpcMessage("UpdateGlobalSettings");
 
-// ─── 响应 ───
-public record IpcResponse(bool Success, string? Error);
+// ─── 响应（辩论裁决 R15-2：VmErrorCode 替换 bool+string）───
+public record IpcResponse(VmErrorCode Code, string? ErrorDetail = null)
+{
+    [JsonIgnore] public bool Success => Code == VmErrorCode.Success;
+    public object? Data { get; init; }
+}
+// VmErrorCode 新增：ServiceUnavailable = 7
 
-public record StatusResponse(List<DiskInfo> Disks) : IpcResponse(true, null);
+public record StatusResponse(List<DiskInfo> Disks) : IpcResponse(VmErrorCode.Success);
 
 public record DiskInfo(
     string DriveLetter, string Label, long CapacityBytes,
     long UsedBytes, long ReservedBytes, int FileCount,
-    bool AutoMount, bool EnableSnapshot,               // ← GUI 需要展示这些状态
+    bool AutoMount, bool EnableSnapshot,
     string State  // "Mounted" | "Mounting" | "Unmounting" | "Error"
 );
 
 public record StatsResponse(long UsedBytes, long TotalBytes, long ReservedBytes,
     int FileCount, double ReadBytesPerSec, double WriteBytesPerSec,
-    double ReadOpsPerSec, double WriteOpsPerSec) : IpcResponse(true, null);
+    double ReadOpsPerSec, double WriteOpsPerSec) : IpcResponse(VmErrorCode.Success);
 
 public record ConfigResponse(
     GlobalSettings Global,
     List<DiskConfig> AutoMountDisks
-) : IpcResponse(true, null);
+) : IpcResponse(VmErrorCode.Success);
 ```
 
-### 2.3 事件推送通道
+### 2.3 PipeServer 实现细节（辩论裁决 R16）
+
+| 参数 | 值 | 说明 |
+|------|-----|------|
+| Accept 模型 | 循环 Accept + 每连接 Task | SemaphoreSlim(8) 限并发 |
+| PipeDirection | Control=InOut；Events=Out(Server)/In(Client) | Byte 模式 |
+| 身份校验 | Connect 缓存 SID；写操作 per-request Impersonate | 读可用缓存 SID |
+| 断开检测 | Read 返回 0 + IOException | 120s 空闲超时；V1 无 KeepAlive |
+
+**PipeClient 重连策略**：
+
+| 策略 | 参数 |
+|------|------|
+| 后台无限重连 | 500ms→30s 指数退避 |
+| RPC 调用重试 | Polly 3次：200ms / 500ms / 1500ms |
+| 状态通知 | 断连 → GUI 显示黄色断连条（辩论裁决 R5） |
+
+```csharp
+// PipeFraming 工具类（辩论裁决 R15-3）
+public static class PipeFraming
+{
+    public static async Task WriteMessageAsync(PipeStream pipe, ReadOnlyMemory<byte> json, CancellationToken ct)
+    {
+        Span<byte> header = stackalloc byte[4];
+        BinaryPrimitives.WriteInt32BigEndian(header, json.Length);
+        await pipe.WriteAsync(header.ToArray(), ct);  // V2: 改用 Memory 重载
+        await pipe.WriteAsync(json, ct);
+    }
+
+    public static async Task<byte[]?> ReadMessageAsync(PipeStream pipe, int maxSize, CancellationToken ct)
+    {
+        var header = new byte[4];
+        if (await ReadExactAsync(pipe, header, ct) != 4) return null; // 断开
+        var len = BinaryPrimitives.ReadInt32BigEndian(header);
+        if (len <= 0 || len > maxSize) throw new ProtocolViolationException($"msg size {len}");
+        var body = new byte[len];
+        if (await ReadExactAsync(pipe, body, ct) != len) return null;
+        return body;
+    }
+}
+```
+
+### 2.4 事件推送通道
 
 ```
 管道名: \\.\pipe\vmem-events-v1
@@ -163,6 +222,58 @@ public record ConfigResponse(
 ---
 
 ## 3. Windows Service
+
+### 3.0 RamDiskManager 编排器（辩论裁决 R14）
+
+```csharp
+public sealed class RamDiskManager : IAsyncDisposable
+{
+    private readonly ConcurrentDictionary<string, MountedDisk> _disks = new(StringComparer.OrdinalIgnoreCase);
+    private readonly ConcurrentDictionary<string, SemaphoreSlim> _mountLocks = new(StringComparer.OrdinalIgnoreCase);
+
+    public async Task MountAsync(DiskConfig config, CancellationToken ct)
+    {
+        var sem = _mountLocks.GetOrAdd(config.DriveLetter, _ => new SemaphoreSlim(1, 1));
+        await sem.WaitAsync(ct);
+        try
+        {
+            // 顺序：Pool → FS → StartDispatcher；失败逆序 Dispose
+            var pool = new PagePool(config.CapacityBytes, config.PageSizeKB * 1024);
+            try
+            {
+                var fs = new VMemFileSystem(pool, config);
+                try
+                {
+                    fs.StartDispatcher();
+                    _disks[config.DriveLetter] = new MountedDisk(config, pool, fs);
+                }
+                catch { fs.Dispose(); throw; }
+            }
+            catch { pool.Dispose(); throw; }
+        }
+        finally { sem.Release(); }
+    }
+
+    public async Task UnmountAsync(string driveLetter, CancellationToken ct)
+    {
+        if (!_disks.TryRemove(driveLetter, out var disk)) return;
+        // drain timeout 5s（R14-4）；超时 ForceUnmount + ERR 日志
+        using var drainCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
+        drainCts.CancelAfter(5000);
+        await disk.StopAsync(drainCts.Token);
+        disk.Dispose();
+    }
+}
+
+public sealed class MountedDisk : IDisposable
+{
+    public DiskConfig Config { get; }
+    public PagePool Pool { get; }
+    public VMemFileSystem FileSystem { get; }
+    public SnapshotManager? Snapshot { get; }
+    // Dispose: StopDispatcher → FS.Dispose → Pool.Dispose
+}
+```
 
 ### 3.1 Service 启动流程
 
@@ -218,18 +329,22 @@ public class VMemWorker : BackgroundService
 }
 ```
 
-### 3.2 Service 停止与关机序列
+### 3.2 Service 停止与关机序列（辩论裁决 R14-5：普通串行 / PRESHUTDOWN 并行）
 
 ```
 停止信号 (SERVICE_CONTROL_STOP 或 SERVICE_CONTROL_PRESHUTDOWN)
     │
     ├─ Step 1: 停止接受新的 IPC 请求
     │
-    ├─ Step 2: 对每个已挂载磁盘（按顺序）
-    │   ├─ 2a: 如果启用快照 → SnapshotManager.SnapshotAsync() 执行最终快照
-    │   ├─ 2b: FspFileSystemStopDispatcher() → 停止处理新的 FS 请求
-    │   ├─ 2c: 等待进行中的 FS 操作完成（drain timeout = 5s）
-    │   ├─ 2d: FspFileSystemDelete() → 卸载文件系统
+    ├─ Step 2: 卸载策略分支
+    │   ├─ STOP（普通）: 串行逐盘卸载
+    │   └─ PRESHUTDOWN:  并行卸载，SemaphoreSlim(4) 限制并发
+    │
+    ├─ Step 3: 对每个已挂载磁盘
+    │   ├─ 3a: 如果启用快照 → SnapshotManager.SnapshotAsync() 执行最终快照
+    │   ├─ 3b: FspFileSystemStopDispatcher() → 停止处理新的 FS 请求
+    │   ├─ 3c: 等待进行中的 FS 操作完成（drain timeout = 5s, R14-4）
+    │   ├─ 3d: FspFileSystemDelete() → 卸载文件系统
     │   └─ 2e: PagePool.Dispose() → 释放所有 NativeMemory
     │
     ├─ Step 3: 关闭 IPC 管道
