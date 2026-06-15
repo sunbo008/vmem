@@ -385,7 +385,65 @@ public class LogAssertFixture : IDisposable
 
 CI 流水线在测试完成后自动解析 JSON 日志，若检测到 `CONTRACT VIOLATION` 条目则标记构建失败（见上方 CI YAML 中的 `Check Contract Violations` 步骤）。
 
-### 7.4 测试覆盖率与日志覆盖率
+### 7.4 故障注入框架（R71-R80 四巨头审查）
+
+> **Google 总监**：生产系统需要可编程故障注入验证降级路径。
+> **Amazon 总监**：所有异常路径必须有自动化覆盖。
+
+```csharp
+/// V1：编译时开关的轻量故障注入（不引入运行时开销）
+public static class FaultInjection
+{
+#if FAULT_INJECTION
+    [ThreadStatic] private static FaultConfig? t_config;
+
+    public static void Configure(FaultConfig config) => t_config = config;
+    public static void Clear() => t_config = null;
+
+    /// 在 NativeMemory.AllocZeroed 前调用
+    public static bool ShouldFailAlloc()
+        => t_config?.AllocFailRate > 0 && Random.Shared.NextDouble() < t_config.AllocFailRate;
+
+    /// 在 CAS 操作前注入延迟
+    public static void MaybeDelay()
+    {
+        if (t_config?.CasDelayMs > 0) Thread.Sleep(t_config.CasDelayMs);
+    }
+#else
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    public static bool ShouldFailAlloc() => false;
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    public static void MaybeDelay() { }
+#endif
+}
+
+public record FaultConfig(
+    double AllocFailRate = 0,      // 0~1, 分配失败概率
+    int CasDelayMs = 0,            // CAS 操作前延迟（模拟高竞争）
+    double PipeDisconnectRate = 0  // IPC 断连概率
+);
+```
+
+**测试用例**（编译时 `FAULT_INJECTION` 宏）：
+
+| 测试 | 故障 | 验证点 |
+|------|------|--------|
+| Write_AllocFail_MidBatch_RollsBack | AllocFailRate=0.5 | 部分分配失败后 BatchLease 归还所有已分配页 |
+| TryReserve_HighContention_EventuallyConverges | CasDelayMs=10 | 8 线程并发 Reserve 最终全部完成/拒绝 |
+| IpcClient_Disconnect_Reconnects | PipeDisconnectRate=0.3 | 管道断开后客户端成功重连 |
+
+### 7.5 模糊测试策略（V2 目标）
+
+> **Oracle 总监**：文件系统必须能抵御任意畸形输入。
+
+| 模糊目标 | 工具 | 输入空间 | V1 | V2 |
+|----------|------|---------|-----|-----|
+| IPC JSON 解析 | SharpFuzz | 畸形 JSON + 超大 payload | ✗ | ✓ |
+| FS 路径处理 | 自定义 | 空路径/超长/NUL字符/特殊字符 | 部分（边界测试） | ✓ |
+| Read/Write 偏移 | 自定义 | offset<0, offset>long.Max/2, length=0 | 部分（单元测试） | ✓ |
+| SecurityDescriptor | SharpFuzz | 畸形 SD 二进制 | ✗ | ✓ |
+
+### 7.6 测试覆盖率与日志覆盖率
 
 | 指标 | 目标 | 检查方式 |
 |------|------|---------|
