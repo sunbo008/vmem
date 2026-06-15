@@ -1,8 +1,8 @@
-R41-R50: OOM handling, CLI commands, FileSystemHost config, callback details
+R51-R60: Rename atomicity, Overwrite/SetLength semantics, ReadDirectory, validation
 
-- R41: NativeMemory.AllocZeroed OOM handling (catch + return false)
-- R42: ConcurrentStack GC pressure analysis (V1 accept, V2 native stack)
-- R43: FileSystemHost parameter configuration (SectorSize, PersistentAcls, etc.)
-- R44-R46: CLI command design (mount/status/unmount/version with full args)
-- R47-R49: SecurityDescriptor/Create/Open callback implementation details
-- R50: Full TODO/FIXME scan - zero residual items found
+- R51: Rename replace with open handles (NTFS PendingDelete semantics)
+- R52: Overwrite callback semantics (truncate + keep SD/CreationTime)
+- R53-R55: SetLength expansion (sparse reserve) and truncation (page release + partial zero)
+- R56-R58: ReadDirectory implementation (snapshot + sort + marker continuation)
+- R59: Phase 1 acceptance checklist alignment verified
+- R60: Cross-plan reference integrity check (all 7 child plans linked)

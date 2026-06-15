@@ -141,6 +141,8 @@ public NtStatus Rename(ReadOnlySpan<char> oldPath, ReadOnlySpan<char> newPath, b
     {
         if (existing.IsDirectory && existing.Children!.Count > 0)
             return NtStatus.STATUS_DIRECTORY_NOT_EMPTY;
+        // R51: existing.OpenCount>0 不阻止替换（NTFS 语义）
+        // PendingDelete=true → Content Dispose 延迟到 Close(RefCount==0)
         existing.PendingDelete = true;
         newParent.Children.TryRemove(newName, out _);
     }
@@ -220,10 +222,20 @@ Phase 3 — 写锁赋值 + memcpy
 - 并发写入已填充的页 → 归还 Phase 2 分配的多余页
 - CAS 调整 `_reservedPages` 避免计数漂移
 
-### SetLength 语义
+### SetLength 语义（辩论裁决 R53-R55）
 
-- **扩展**：`_pool.TryReserve(additionalPages)` 预留配额 → 仅更新 `_fileSize`（稀疏，不分配页）
-- **截断**：归还超出范围的页 → `_pool.Unreserve()` 释放多余预留
+**扩展**（newSize > oldSize）：
+1. 计算需要的新页数：`newPages = CeilDiv(newSize, pageSize) - CeilDiv(oldSize, pageSize)`
+2. `_pool.TryReserve(newPages)` → 失败返回 STATUS_DISK_FULL
+3. 写锁内更新 `_fileSize` 和 `_allocationSize`（仅增量，不分配物理页 → 稀疏语义）
+
+**截断**（newSize < oldSize）：
+1. 写锁内：
+   - 计算释放页范围：`[CeilDiv(newSize, pageSize)..CeilDiv(oldSize, pageSize))`
+   - 遍历释放范围，对每个 `_pageTable[i] != 0` 的页：`_pool.Return(page)` + `_pageTable[i] = 0`
+   - 更新 `_fileSize = newSize`，`_allocationSize` 减少已释放的物理页 + Unreserve 多余预留
+2. 如果截断到文件中间（非页对齐）：最后一个保留页内 `newSize % pageSize` 之后的字节需要清零
+3. Unreserve：`releasedReservation = oldReservedPages - newNeededPages`，`_pool.Unreserve(releasedReservation)`
 
 ---
 
@@ -246,7 +258,8 @@ public sealed class VMemFileSystem : IFileSystem
     // --- 命名空间 ---
     NtStatus Create(...);      // 设置 CreationTime/LastAccessTime/LastWriteTime/ChangeTime
     NtStatus Open(...);
-    NtStatus Overwrite(...);   // Truncate + 重置 LastWriteTime/ChangeTime（R21）
+    NtStatus Overwrite(...);   // R52: SetLength(0) + 重置 Attributes + 更新 LWT/CT
+                               // 保留 SD 和 CreationTime；FILE_ATTRIBUTE_ARCHIVE 置位
     NtStatus Rename(...);      // → Notify（锁外）
 
     // --- 生命周期 ---
@@ -259,12 +272,18 @@ public sealed class VMemFileSystem : IFileSystem
     NtStatus Flush(...);       // RAM 盘 = no-op，返回 STATUS_SUCCESS
     NtStatus SetFileSize(...); // SetLength + 预留
 
-    // --- 目录枚举（R23）---
+    // --- 目录枚举（R23/R56-R58）---
     NtStatus ReadDirectory(...);
-    // 1. Marker == null → 从头开始；Marker != null → 续读（跳过 <= Marker 的条目）
-    // 2. "." 和 ".." 由 WinFsp 自动注入（SectorSize != 0 时），用户态不生成
-    // 3. Children.Values 快照 + 按 Name OrdinalIgnoreCase 排序
-    // 4. 填充 FillEntry 直到缓冲区满；返回 STATUS_SUCCESS（非 STATUS_NO_MORE_FILES）
+    // 1. Marker == null → 从头开始；Marker != null → 续读
+    // 2. "." 和 ".." 由 WinFsp 自动注入（SectorSize != 0 时）
+    // 3. 实现伪码：
+    //    var entries = dir.Children!.Values.ToArray();  // 快照
+    //    Array.Sort(entries, (a,b) => string.Compare(a.Name, b.Name, OrdinalIgnoreCase));
+    //    foreach (var e in entries)
+    //        if (marker == null || string.Compare(e.Name, marker, OrdinalIgnoreCase) > 0)
+    //            if (!FillEntry(e)) break;  // 缓冲区满
+    //    return STATUS_SUCCESS;
+    // 4. 注意：不返回 STATUS_NO_MORE_FILES；WinFsp 看到 FillEntry 未填满即知结束
 
     // --- 元数据 ---
     NtStatus GetFileInfo(...);  // AllocationSize = Content?.AllocationSize ?? 0
