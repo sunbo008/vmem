@@ -1,0 +1,60 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256" fill="none">
+  <!-- VMem App Icon: Memory chip with disk overlay -->
+  <defs>
+    <linearGradient id="chip-grad" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0%" stop-color="#6366F1"/>
+      <stop offset="100%" stop-color="#8B5CF6"/>
+    </linearGradient>
+    <linearGradient id="pin-grad" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#A5B4FC"/>
+      <stop offset="100%" stop-color="#818CF8"/>
+    </linearGradient>
+    <linearGradient id="disk-grad" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0%" stop-color="#22D3EE"/>
+      <stop offset="100%" stop-color="#06B6D4"/>
+    </linearGradient>
+  </defs>
+
+  <!-- Memory chip body -->
+  <rect x="48" y="48" width="160" height="120" rx="12" fill="url(#chip-grad)"/>
+
+  <!-- Chip pins - top -->
+  <rect x="72" y="32" width="12" height="20" rx="3" fill="url(#pin-grad)"/>
+  <rect x="96" y="32" width="12" height="20" rx="3" fill="url(#pin-grad)"/>
+  <rect x="120" y="32" width="12" height="20" rx="3" fill="url(#pin-grad)"/>
+  <rect x="144" y="32" width="12" height="20" rx="3" fill="url(#pin-grad)"/>
+  <rect x="168" y="32" width="12" height="20" rx="3" fill="url(#pin-grad)"/>
+
+  <!-- Chip pins - bottom -->
+  <rect x="72" y="164" width="12" height="20" rx="3" fill="url(#pin-grad)"/>
+  <rect x="96" y="164" width="12" height="20" rx="3" fill="url(#pin-grad)"/>
+  <rect x="120" y="164" width="12" height="20" rx="3" fill="url(#pin-grad)"/>
+  <rect x="144" y="164" width="12" height="20" rx="3" fill="url(#pin-grad)"/>
+  <rect x="168" y="164" width="12" height="20" rx="3" fill="url(#pin-grad)"/>
+
+  <!-- Chip pins - left -->
+  <rect x="32" y="72" width="20" height="12" rx="3" fill="url(#pin-grad)"/>
+  <rect x="32" y="96" width="20" height="12" rx="3" fill="url(#pin-grad)"/>
+  <rect x="32" y="120" width="20" height="12" rx="3" fill="url(#pin-grad)"/>
+
+  <!-- Chip pins - right -->
+  <rect x="204" y="72" width="20" height="12" rx="3" fill="url(#pin-grad)"/>
+  <rect x="204" y="96" width="20" height="12" rx="3" fill="url(#pin-grad)"/>
+  <rect x="204" y="120" width="20" height="12" rx="3" fill="url(#pin-grad)"/>
+
+  <!-- Inner circuit pattern -->
+  <rect x="72" y="72" width="112" height="72" rx="6" fill="none" stroke="#C7D2FE" stroke-width="2"/>
+  <line x1="100" y1="72" x2="100" y2="144" stroke="#C7D2FE" stroke-width="1.5" opacity="0.5"/>
+  <line x1="128" y1="72" x2="128" y2="144" stroke="#C7D2FE" stroke-width="1.5" opacity="0.5"/>
+  <line x1="156" y1="72" x2="156" y2="144" stroke="#C7D2FE" stroke-width="1.5" opacity="0.5"/>
+  <line x1="72" y1="96" x2="184" y2="96" stroke="#C7D2FE" stroke-width="1.5" opacity="0.5"/>
+  <line x1="72" y1="120" x2="184" y2="120" stroke="#C7D2FE" stroke-width="1.5" opacity="0.5"/>
+
+  <!-- "V" letter in center -->
+  <text x="128" y="118" text-anchor="middle" font-family="Segoe UI,Arial" font-weight="700" font-size="40" fill="white">V</text>
+
+  <!-- Speed indicator disk overlay (bottom-right) -->
+  <circle cx="196" cy="196" r="44" fill="url(#disk-grad)" stroke="white" stroke-width="3"/>
+  <path d="M196 168 L210 196 L196 192 L182 196 Z" fill="white" opacity="0.9"/>
+  <circle cx="196" cy="196" r="8" fill="white"/>
+</svg>

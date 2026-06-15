@@ -1,28 +1,24 @@
-四巨头审查 R91-R99：最终打磨 — 跨方案一致性、文档完整性、交付就绪
+设计并实现全套 SVG 图标集（27 个），完善方案图标引用
 
-【全员共识修复】
-- 父方案扇区大小从 512 修正为 4096（与 FileSystemHost.SectorSize=4096 一致）
-- 项目结构新增 Abstractions/ 目录（IPageAllocator/ISnapshotSerializer/IVMemPlugin）
-- 项目结构新增 FaultInjection.cs（FAULT_INJECTION 编译开关）
-- 依赖表补充 Polly 8.x（IPC重试）、xUnit 2.x、coverlet.collector
-- Phase 1 关键决策清单新增 7 条四巨头审查结论
+【新增 SVG 图标】assets/icons/ 目录下共 27 个 SVG 文件：
+- 应用图标：vmem-app.svg（内存芯片+速度仪表盘，品牌渐变色 Indigo→Violet）
+- 安装图标：installer.svg（内存芯片+安装箱体）
+- 系统托盘：3 种状态（默认/已连接绿点/断连红点），16x16 像素优化
+- 导航栏：4 个（仪表盘/性能/设置/关于），stroke 风格适配 Fluent Design
+- 操作按钮：6 个（创建/打开文件夹/弹出/删除/刷新/保存）
+- 状态指示：3 个（连接绿/断连红/警告三角）
+- 场景预设：3 个（浏览器=地球/临时文件=温度计/开发=代码括号）
+- 磁盘功能：5 个（通用磁盘/已挂载磁盘/内存芯片/速度仪表/快照相机）
+- 工具图标：3 个（日志/修复/导出）
+- 辅助图标：2 个（服务/主题自动切换）
 
-【Google 总监】
-- 确认所有接口抽象就位，V2 扩展路径清晰
+【设计规范】
+- stroke 风格图标使用 currentColor 适配明暗主题
+- 品牌色系：Indigo #6366F1 / Violet #8B5CF6 / Cyan #22D3EE
+- 状态色系：Green #22C55E / Red #EF4444 / Yellow #F59E0B
+- 图标索引文档 README.md 含完整用途表和 ICO 转换指南
 
-【Microsoft 总监】
-- 确认 WinFsp API 陷阱表完整覆盖 7 个已知陷阱
-- 确认 Create/GetFileInfo 回调伪代码完整
-
-【Amazon 总监】
-- 确认故障注入框架与 CI 集成路径
-- 确认 MountAsync 异常安全流程无遗漏
-
-【Oracle 总监】
-- 确认 SetLength/Write/Read 三大核心操作事务语义完整
-- 确认契约检查在 Release 构建中 O(1) 边界全部到位
-
-【审查总结】
-- .review_findings.md 更新：四巨头审查完整记录
-- 99 轮审查 / 9 次提交 / 18 处伪代码修复 / 12 个新增方法 / 15 条新测试
-- 方案和伪代码达到实现就绪状态
+【方案更新】
+- vmem_04_gui.plan.md：新增 §0 图标资源章节，含完整图标映射表和 WPF 集成方式
+- vmem_ram_disk_design（父方案）：项目结构新增 assets/icons/ 目录
+- vmem_05_persistence_deploy.plan.md：安装包章节引用 installer.svg

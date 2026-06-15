@@ -36,6 +36,41 @@ isProject: false
 
 ---
 
+## 0. 图标资源（SVG 设计）
+
+所有图标均为 SVG 矢量格式，存放于 `assets/icons/`。详见 [图标索引](../assets/icons/README.md)。
+
+| 类别 | 图标文件 | 用途 |
+|------|---------|------|
+| 应用 | `vmem-app.svg` | 主窗口标题栏、任务栏、开始菜单 |
+| 托盘 | `vmem-tray.svg` / `-connected` / `-disconnected` | 系统托盘状态切换 |
+| 导航 | `nav-dashboard.svg` / `nav-performance.svg` / `nav-settings.svg` / `nav-about.svg` | NavigationView 左侧菜单 |
+| 操作 | `action-create.svg` / `action-open-folder.svg` / `action-eject.svg` / `action-delete.svg` | 磁盘卡片按钮、工具栏 |
+| 状态 | `status-connected.svg` / `status-disconnected.svg` / `status-warning.svg` | 底部状态栏、卡片徽章 |
+| 预设 | `preset-browser.svg` / `preset-temp.svg` / `preset-dev.svg` | 创建向导场景预设图标 |
+| 功能 | `disk-drive.svg` / `disk-mounted.svg` / `memory-chip.svg` / `speed-gauge.svg` / `snapshot.svg` | 卡片图标、监控面板 |
+| 工具 | `tool-log.svg` / `tool-repair.svg` / `tool-export.svg` | 设置页诊断区域 |
+| 主题 | `theme-auto.svg` | 设置页主题切换 |
+| 服务 | `service.svg` | 设置页后台服务区域 |
+| 安装 | `installer.svg` | Inno Setup 安装向导 |
+
+**WPF 集成方式**：
+
+```xml
+<!-- XAML 中引用 SVG（通过 SharpVectors 或编译时转 DrawingImage）-->
+<ui:SymbolIcon Symbol="Home24" />  <!-- WPF UI 内置图标（导航等通用图标） -->
+
+<!-- 自定义 SVG 图标通过资源字典加载 -->
+<Image Source="/Assets/Icons/vmem-app.svg" Width="32" Height="32" />
+
+<!-- 系统托盘图标动态切换 -->
+<!-- Connected → vmem-tray-connected.ico -->
+<!-- Disconnected → vmem-tray-disconnected.ico -->
+<!-- ICO 由 SVG 在构建时通过 Inkscape+ImageMagick 转换生成 -->
+```
+
+---
+
 ## 1. UI 框架与架构选型
 
 ### 1.1 核心 UI 库：WPF UI (by lepoco)

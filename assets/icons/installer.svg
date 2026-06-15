@@ -1,0 +1,29 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256" fill="none">
+  <!-- Installer icon: memory chip in a box -->
+  <defs>
+    <linearGradient id="box-g" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0%" stop-color="#6366F1"/>
+      <stop offset="100%" stop-color="#4F46E5"/>
+    </linearGradient>
+  </defs>
+
+  <!-- Box base -->
+  <rect x="32" y="80" width="192" height="144" rx="16" fill="url(#box-g)"/>
+
+  <!-- Box lid -->
+  <path d="M24 80 L128 32 L232 80 L128 128 Z" fill="#818CF8"/>
+  <path d="M128 128 L128 32" stroke="#A5B4FC" stroke-width="2" opacity="0.5"/>
+  <path d="M24 80 L232 80" stroke="#A5B4FC" stroke-width="2" opacity="0.3"/>
+
+  <!-- Arrow down -->
+  <path d="M128 140 L128 200" stroke="white" stroke-width="6" stroke-linecap="round"/>
+  <polyline points="108,180 128,200 148,180" fill="none" stroke="white" stroke-width="6" stroke-linecap="round" stroke-linejoin="round"/>
+
+  <!-- Memory chip pins on sides -->
+  <rect x="16" y="110" width="20" height="8" rx="2" fill="#A5B4FC"/>
+  <rect x="16" y="130" width="20" height="8" rx="2" fill="#A5B4FC"/>
+  <rect x="16" y="150" width="20" height="8" rx="2" fill="#A5B4FC"/>
+  <rect x="220" y="110" width="20" height="8" rx="2" fill="#A5B4FC"/>
+  <rect x="220" y="130" width="20" height="8" rx="2" fill="#A5B4FC"/>
+  <rect x="220" y="150" width="20" height="8" rx="2" fill="#A5B4FC"/>
+</svg>

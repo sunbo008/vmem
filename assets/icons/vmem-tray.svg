@@ -1,0 +1,11 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16" fill="none">
+  <!-- Tray icon: simplified memory chip -->
+  <rect x="2" y="3" width="12" height="10" rx="2" fill="#6366F1"/>
+  <rect x="4" y="1" width="2" height="3" rx="0.5" fill="#A5B4FC"/>
+  <rect x="7" y="1" width="2" height="3" rx="0.5" fill="#A5B4FC"/>
+  <rect x="10" y="1" width="2" height="3" rx="0.5" fill="#A5B4FC"/>
+  <rect x="4" y="12" width="2" height="3" rx="0.5" fill="#A5B4FC"/>
+  <rect x="7" y="12" width="2" height="3" rx="0.5" fill="#A5B4FC"/>
+  <rect x="10" y="12" width="2" height="3" rx="0.5" fill="#A5B4FC"/>
+  <text x="8" y="10.5" text-anchor="middle" font-family="Arial" font-weight="700" font-size="6" fill="white">V</text>
+</svg>

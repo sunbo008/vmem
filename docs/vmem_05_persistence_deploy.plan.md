@@ -191,6 +191,9 @@ hooyao/RamDrive 已验证 WinFsp.Native + Native AOT 的可行性：
 
 ## 4. Inno Setup 安装包
 
+> 安装程序图标：`assets/icons/installer.svg`（构建时转 ICO）
+> 应用程序图标：`assets/icons/vmem-app.svg`（构建时转 ICO，用于开始菜单和桌面快捷方式）
+
 ### 安装流程
 
 ```

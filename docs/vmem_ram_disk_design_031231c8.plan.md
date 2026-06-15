@@ -240,6 +240,18 @@ vmem/
 │   ├── VMem.Core.Tests/
 │   ├── VMem.Integration.Tests/
 │   └── VMem.Benchmarks/
+├── assets/                          # 设计资源
+│   └── icons/                      # SVG 图标集（27 个）
+│       ├── vmem-app.svg            # 应用主图标
+│       ├── vmem-tray*.svg          # 系统托盘图标（3 种状态）
+│       ├── nav-*.svg               # 导航栏图标（4 个）
+│       ├── action-*.svg            # 操作按钮图标（6 个）
+│       ├── status-*.svg            # 状态指示图标（3 个）
+│       ├── preset-*.svg            # 场景预设图标（3 个）
+│       ├── disk-*.svg / memory-*.svg / speed-*.svg  # 功能图标
+│       ├── tool-*.svg              # 工具图标（3 个）
+│       ├── installer.svg           # 安装程序图标
+│       └── README.md               # 图标索引与设计指南
 ├── installer/                       # → 子方案 ⑤
 │   └── vmem-setup.iss
 ├── docs/
