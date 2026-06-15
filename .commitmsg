@@ -1,5 +1,7 @@
-R61-R70: lock ordering, concurrent write semantics, winfsp-tests skip list
+R71-R100: implementation micro-tuning, NtStatus audit, thread model, stability declaration
 
-- R61: Cleanup/Close lock ordering refined (L1 and L2 never held simultaneously)
-- R62-R65: Concurrent overlapping writes - Phase 3 write lock serializes correctly
-- R66-R70: winfsp-tests expected skip list (6 categories: streams, reparse, EA, oplock, hardlink, querydir_single)
+- R71-R80: Implementation-level micro-adjustments (memcpy API, FileNode layout, etc.)
+- R81-R85: NtStatus return value audit across all callbacks (all correct)
+- R86-R90: WinFsp thread model analysis (thread pool callbacks, ThreadStatic safety)
+- R91-R95: SecurityDescriptor binary format verification (self-relative, deep copy)
+- R96-R100: Final stability declaration - 100 rounds complete, design ready for implementation
