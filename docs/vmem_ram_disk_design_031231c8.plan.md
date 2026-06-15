@@ -123,10 +123,10 @@ graph TB
     end
 
     subgraph Diagnostics ["Diagnostics Layer (L3 可观测性)"]
-        VMemLogger["VMemLogger - Serilog 结构化日志"]
-        OpContext["OperationContext - CorrelationId 全链路追踪"]
-        ContractCheck["Contract - 前置/后置/不变量检查"]
-        HealthCheck["HealthChecker - 30s 周期性自诊断"]
+        VMemLogger["VMemLogger - Serilog 单 JSON Sink"]
+        OpContext["OperationContext - ThreadStatic CorrelationId"]
+        ContractCheck["Contract - Release O(1) 边界 + 采样 O(n)"]
+        HealthCheck["HealthChecker - 按需自诊断(非定时)"]
     end
 
     subgraph MemoryEngine ["Memory Engine Layer"]
@@ -294,18 +294,32 @@ vmem/
 
 ## 七、开发路线
 
-### Phase 1 - 核心文件系统（MVP）
+### Phase 1 - 核心文件系统（MVP）— 4 周，CLI 单进程
 
-| 任务 | 子方案 | 验收标准 |
-|------|--------|----------|
-| PagePool + PageLease + 容量预留 | ① | 分配/归还/耗尽/预留竞态通过；泄漏检测 |
-| PagedFileContent（三阶段写入） | ①② | 顺序/随机读写；稀疏；TOCTOU |
-| DirectoryTree + FileNode | ② | 并发创建/删除/重命名无死锁 |
-| VMemFileSystem 全部必要回调 | ② | winfsp-tests 合规 |
-| 内核缓存 + Notify | ② | Rename/Delete 后读取一致 |
-| 安全模型 | ② | SD 存储/继承/查询正确 |
-| CLI 挂载工具 | ③ | `vmem mount R: --size 1G` 可用 |
-| 日志基础设施 + 契约系统 | ⑦ | Serilog JSON 输出 + CorrelationId 全链路 + Contract 检查 |
+> **关键决策（经 10 轮 Agent 辩论确定）**：
+> - Phase 1 = **CLI 单进程挂载**，不含 Service/GUI/IPC
+> - 默认 `EnableKernelCache=false`（Safe 模式），Notify 代码同期实现但守卫
+> - winfsp-tests 对已支持特性 **100% 通过**；不支持特性 **explicit skip**
+> - 日志 V1 = 单 JSON Sink + Warning 默认 + ThreadStatic CorrelationId
+> - Contract Release 仅 O(1) 边界检查；O(n) 改采样或 Dispose 时
+> - Config V1 = CLI 参数，无 config.json
+
+| 周次 | 任务 | 子方案 | 验收标准 |
+|------|------|--------|----------|
+| W1 | PagePool + PageLease + Reserve CAS | ① | 10 条单测全绿 + Return 清零验证 |
+| W1 | FileNode：RefCount/PendingDelete/SD（memfs 状态转移表） | ② | 状态机单测 |
+| W1 | Lock Hierarchy 文档写入子方案 ② | ② | L0→L1→L2→L3 + Notify 解锁后 |
+| W2 | DirectoryTree：ConcurrentDictionary + 字典序 per-parent Lock | ② | Rename 不死锁 |
+| W2 | PagedFileContent：三阶段写入 + TOCTOU + RWLS | ② | 8 条单测 |
+| W3 | VMemFileSystem 17 回调（Cleanup/Close 严格 memfs 时序） | ② | Notify 守卫 |
+| W3 | 安全模型：Root IU SDDL + GetSecurityByName + 继承 | ② | SD 测试 |
+| W3 | CLI：`vmem mount --cache safe|balanced|fast`（默认 safe） | ③ | 可挂载 |
+| W4 | winfsp-tests @ Safe → 100%（skip list 仅不支持特性） | ⑥ | 合规门禁 |
+| W4 | 缓存一致性测试 @ Fast（Rename→Read, Delete→Exists） | ⑥ | P1 软门禁 |
+| W4 | 集成测试 8 线程 1 分钟 + 泄漏检测 | ⑥ | RentedPages==0 |
+| W4 | 日志：Debug CorrelationId 全链路；Release Warning 默认 | ⑦ | 骨架可用 |
+| W4 | docs/known-skips.md + Phase 1 验收表 | ⑥ | 交付物 |
+| W4 | 契约对齐检查点：DiskConfig/VmErrorCode/OperationContext 一致 | 全部 | 跨方案验证 |
 
 ### Phase 2 - GUI 应用
 
@@ -337,18 +351,38 @@ vmem/
 
 ## 八、错误处理与 NtStatus 映射
 
-| 场景 | NtStatus | 说明 |
-|------|----------|------|
-| 内存池耗尽 | `STATUS_DISK_FULL` | TryRent / TryReserve false |
-| 文件已存在 | `STATUS_OBJECT_NAME_COLLISION` | TryAdd false |
-| 文件不存在 | `STATUS_OBJECT_NAME_NOT_FOUND` | Lookup null |
-| 目录非空 | `STATUS_DIRECTORY_NOT_EMPTY` | Children > 0 |
-| 路径无效 | `STATUS_OBJECT_NAME_INVALID` | 解析失败 |
-| 访问被拒 | `STATUS_ACCESS_DENIED` | 内核 SD 判断 |
-| 共享冲突 | `STATUS_SHARING_VIOLATION` | 内核处理 |
-| NativeMemory OOM | `STATUS_INSUFFICIENT_RESOURCES` | AllocZeroed 失败 |
-| 内部异常 | `STATUS_UNEXPECTED_IO_ERROR` | catch-all |
-| 容量预留超限 | `STATUS_DISK_FULL` | TryReserve false |
+### 8.1 VmErrorCode（跨层统一错误码）
+
+> **辩论裁决 R10**：Phase 1 定义最小集，IPC/GUI 复用。
+
+```csharp
+public enum VmErrorCode
+{
+    Success = 0,
+    DiskFull = 1,        // PagePool 耗尽 → STATUS_DISK_FULL
+    DriveInUse = 2,      // 盘符被占用
+    InvalidArgument = 3, // 参数校验失败
+    Internal = 4,        // 未预期内部异常
+    Unauthorized = 5,    // IPC 鉴权失败（Phase 3）
+    RateLimited = 6,     // IPC 限速（Phase 3）
+}
+```
+
+### 8.2 NtStatus 映射表
+
+| 场景 | NtStatus | VmErrorCode | 说明 |
+|------|----------|-------------|------|
+| 内存池耗尽 | `STATUS_DISK_FULL` | DiskFull | TryRent / TryReserve false |
+| 文件已存在 | `STATUS_OBJECT_NAME_COLLISION` | — | TryAdd false |
+| 文件不存在 | `STATUS_OBJECT_NAME_NOT_FOUND` | — | Lookup null |
+| 目录非空 | `STATUS_DIRECTORY_NOT_EMPTY` | — | Children > 0 |
+| 路径无效 | `STATUS_OBJECT_NAME_INVALID` | InvalidArgument | 解析失败 |
+| 访问被拒 | `STATUS_ACCESS_DENIED` | Unauthorized | 内核 SD / IPC Token |
+| 共享冲突 | `STATUS_SHARING_VIOLATION` | — | 内核处理 |
+| NativeMemory OOM | `STATUS_INSUFFICIENT_RESOURCES` | DiskFull | AllocZeroed 失败 |
+| 内部异常 | `STATUS_UNEXPECTED_IO_ERROR` | Internal | catch-all |
+| 容量预留超限 | `STATUS_DISK_FULL` | DiskFull | TryReserve false |
+| Contract O(1) 边界违反 | 拒绝当前操作 + ERR 日志 | Internal | 不 silent continue |
 
 ---
 

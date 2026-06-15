@@ -34,17 +34,22 @@ isProject: false
 
 ---
 
-## 1. 分层测试体系
+## 1. 分层测试体系（辩论裁决 R9：投入比 40% 单测 : 60% 合规+集成）
 
-| 层级 | 框架 | 覆盖目标 | 运行频率 |
-|------|------|----------|---------|
-| 单元测试 | xUnit | PagePool（含 Reserve CAS）、PagedFileContent（三阶段/TOCTOU）、DirectoryTree、SD | 每次提交 |
-| 集成测试 | xUnit | 挂载真实 WinFsp FS，文件 CRUD/权限/并发 | 每次提交（需 WinFsp） |
-| 合规测试 | winfsp-tests | WinFsp 官方套件，验证 POSIX/Win32 语义 | 每次提交 |
-| 缓存一致性 | 自定义 | `EnableKernelCache=true` 下 Rename→Read、Delete→Exists | 每次提交 |
-| 压力测试 | 自定义 | 8 线程并发读写 + Rename/Delete + SetLength，10 分钟 | 每日/手动 |
-| 性能基准 | BenchmarkDotNet | 顺序/随机读写吞吐、PagePool 分配延迟 | main 分支合并 |
-| 泄漏检测 | 自定义 | 循环创建/删除 10 万文件后 RentedPages + ReservedPages == 0 | 每日/手动 |
+| 层级 | 框架 | 覆盖目标 | V1 数量 | CI 运行 |
+|------|------|----------|--------|---------|
+| 单元测试 | xUnit | PagePool(10) + PagedFileContent(8) + DirectoryTree(6) | **24 条** | 每次 push |
+| 集成测试 | xUnit | CRUD、Rename、并发 8 线程、SD 继承、KernelCache Rename、DISK_FULL | **6 条** | 每次 push（需 WinFsp） |
+| 合规测试 | winfsp-tests | 已支持特性 **100%**；不支持特性 **explicit skip** | 1 suite | main + nightly |
+| 压力 smoke | 自定义 | 8 线程 120 秒无崩溃 + 泄漏检测 | **1 条** | 每次 push |
+| 压力 full | 自定义 | 8 线程 600 秒 + 10 万文件循环 | **2 条** | nightly |
+| 微基准 | BenchmarkDotNet | Rent/Return/Batch/CAS（无 WinFsp 依赖） | **4 条** | main artifact |
+| IPC / GUI | — | V1 不测 | 0 | Phase 2-3 |
+
+> **合计：约 32 条自动化用例 + 1 合规套件**（Phase 1 MVP）
+
+### 新增交付物
+- `docs/known-skips.md`：winfsp-tests skip 理由 + WinFsp 版本 + 计划 Phase。**禁止** open-ended known failures。
 
 ---
 
@@ -159,18 +164,18 @@ public class PagePoolBenchmarks
 
 ---
 
-## 5. 正确性不变量（Release 也生效）
+## 5. 正确性不变量（辩论裁决 R2/R6：Release O(1) + 采样 O(n)）
 
-**L3 范式变更**：不变量通过 `Contract.Invariant` 实现，**Release 构建中也检查**，违反时写入 `ERR` 级别结构化日志而非崩溃（详见 [子方案 ⑦](./vmem_07_logging_observability.plan.md) §4）：
+| 不变量 | 表达式 | 检查时机 | Release 行为 |
+|--------|--------|---------|-------------|
+| **CommittedWithinCapacity** | `rentedCount + reservedCount <= maxPages` | 每次 Rent/Reserve | ✓ O(1)，违反→拒绝操作+ERR |
+| **NoNegativeCount** | `rentedCount >= 0 && reservedCount >= 0` | 每次 Return/Unreserve | ✓ O(1)，违反→ERR |
+| PoolConsistent | `rentedCount + freeCount <= allocatedCount` | 采样（每 1024 次）或 Dispose | O(1) 计数器版 |
+| NoPageLeak | 所有已 Rent 的页在 pageTable 或 in-transit 中 | Dispose | ✓ 强制 Free |
+| ReservationsConsistent | `Σ(file.reservedPages) == pool.reservedCount` | Dispose | ✓ ERR 日志 |
+| NotifyAfterMutation | FspNotify 已调用（EnableKernelCache 时） | 回调出口 | ✓ O(1) flag |
 
-| 不变量 | 表达式 | 检查时机 |
-|--------|--------|---------|
-| PoolConsistent | `rentedCount + freeStack.Count <= allocatedCount <= maxPages` | 每次 Rent/Return |
-| NoPageLeak | 所有已 Rent 的页在某文件 pageTable 或 in-transit 中 | Dispose |
-| ReservationsConsistent | `Σ(file.reservedPages) == pool.reservedCount` | Dispose |
-| CommittedWithinCapacity | `rentedCount + reservedCount <= maxPages` | 每次 Rent/Reserve |
-| PageTableIntegrity | 所有非零页表项指向有效 NativeMemory 地址 | Write Phase 3 后 |
-| NotifyAfterMutation | Rename/Delete/Overwrite 后 FspNotify 已调用 | 回调出口 |
+> V1 废弃热路径 O(n) 检查（`freeStack.Count`、`PageTableIntegrity` 逐页扫描）。
 
 ---
 
@@ -178,44 +183,48 @@ public class PagePoolBenchmarks
 
 ```yaml
 name: CI
-on: [push, pull_request]
+on:
+  push:
+  pull_request:
+  schedule:
+    - cron: '0 2 * * *'   # nightly stress + 全量合规
 
 env:
   VMEM_LOG_PATH: ${{ github.workspace }}/test-logs
 
 jobs:
-  build-test:
+  unit:
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
-      - name: Install WinFsp
-        run: choco install winfsp -y
+      - uses: actions/setup-dotnet@v4
+        with: { dotnet-version: '9.0.x' }
+      - run: dotnet test tests/VMem.Core.Tests -c Release --collect:"XPlat Code Coverage"
 
-      - name: Build
-        run: dotnet build -c Release
+  integration:
+    runs-on: windows-latest
+    needs: unit
+    steps:
+      - uses: actions/checkout@v4
+      - run: choco install winfsp -y
+      - run: dotnet test tests/VMem.Integration.Tests -c Release --filter "Category!=FullCompliance"
+      # PR: 跳过 winfsp-tests 全量
 
-      - name: Unit Tests
-        run: dotnet test tests/VMem.Core.Tests -c Release --logger "trx;LogFileName=unit.trx"
-
-      - name: Integration Tests
-        run: dotnet test tests/VMem.Integration.Tests -c Release --logger "trx;LogFileName=integration.trx"
-
-      # L3: 解析 JSON 日志，检查契约违反
+  compliance-full:
+    if: github.ref == 'refs/heads/main' || github.event_name == 'schedule'
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: choco install winfsp -y
+      - run: dotnet test tests/VMem.Integration.Tests -c Release --filter "Category=FullCompliance"
       - name: Check Contract Violations
         if: always()
         shell: pwsh
         run: |
-          $violations = Get-ChildItem "$env:VMEM_LOG_PATH/*.json" -ErrorAction SilentlyContinue |
-            ForEach-Object { Get-Content $_ } |
-            ConvertFrom-Json |
-            Where-Object { $_.msg -eq "CONTRACT VIOLATION" }
-          if ($violations.Count -gt 0) {
-            Write-Error "Found $($violations.Count) contract violations!"
-            $violations | ConvertTo-Json | Write-Output
-            exit 1
-          }
-
-      # L3: 上传日志归档供 AI 离线分析
+          $v = Get-ChildItem "$env:VMEM_LOG_PATH/*.json" -EA SilentlyContinue |
+            % { Get-Content $_ | ConvertFrom-Json } |
+            ? { $_.msg -eq "CONTRACT VIOLATION" }
+          if ($v) { exit 1 }
       - name: Upload Test Logs
         if: always()
         uses: actions/upload-artifact@v4
@@ -223,26 +232,33 @@ jobs:
           name: test-logs-${{ github.sha }}
           path: |
             ${{ env.VMEM_LOG_PATH }}/*.json
-            ${{ env.VMEM_LOG_PATH }}/*.log
             **/*.trx
           retention-days: 14
+
+  stress-nightly:
+    if: github.event_name == 'schedule'
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: dotnet test tests/VMem.Stress.Tests -c Release --filter "Category=Stress"
 
   benchmark:
     if: github.ref == 'refs/heads/main'
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
-      - name: Install WinFsp
-        run: choco install winfsp -y
-      - name: Run Benchmarks
-        run: dotnet run -c Release --project tests/VMem.Benchmarks
-      - name: Upload Benchmark Results
-        uses: actions/upload-artifact@v4
+      - run: dotnet run -c Release --project tests/VMem.Benchmarks
+      - uses: actions/upload-artifact@v4
         with:
           name: benchmarks-${{ github.sha }}
           path: BenchmarkDotNet.Artifacts/
           retention-days: 30
 ```
+
+**CI 注意点（辩论裁决 R9）**：
+- 挂载用随机盘符（如 `Z:`）+ `IClassFixture` 串行，避免并行 job 冲突
+- winfsp-tests 通过 `Process.Start` 调用 WinFsp 安装目录下的 `winfsp-tests.exe`
+- Benchmark **不设 hard gate**（不因 ±10% 失败），结果存 artifact 30 天
 
 ---
 

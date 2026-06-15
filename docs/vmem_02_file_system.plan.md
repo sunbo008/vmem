@@ -61,8 +61,11 @@ public sealed class FileNode : IDisposable
 
     public bool PendingDelete { get; set; }
 
-    // AllocationSize = 实际已分配页数 × 页大小（Explorer "占用空间" 依赖此值）
-    public long AllocationSize => Content?.AllocatedBytes ?? 0;
+    // AllocationSize 维护（辩论裁决 R7）：
+    // 语义 = max(物理已分配字节, 预留配额字节, FileSize)
+    // GetFileInfo 直接读字段，不做 O(n) 扫描
+    // 不变量：AllocationSize >= FileSize（Release Contract O(1)）
+    public long AllocationSize => Content?.AllocationSize ?? 0;
 
     public void Dispose();
 }
@@ -72,11 +75,31 @@ public sealed class FileNode : IDisposable
 
 ## 2. DirectoryTree - 线程安全目录树
 
+### 2.1 锁层级定义（辩论裁决 R4/R7）
+
+> **核心规则**：数字越小越先获取，**禁止逆序持有**。
+
+```
+L0 — PagePool 内部（ConcurrentStack / CAS，无阻塞锁，回调内可安全调用）
+L1 — DirectoryTree 父目录锁（Rename 时字典序：先 lock 路径较小的父目录）
+L2 — PagedFileContent._rwLock（per-file，RWLS）
+L3 — FileNode 元数据锁（仅保护 RefCount/PendingDelete，持锁时间 < 1μs）
+
+禁止：
+- 持 L2 写锁时调用 L1（Rename 路径）
+- 持 L1 时等待 L2 写锁（应：L1 内只做树操作，释放后再 I/O）
+- Cleanup/Close 中：L1 Remove + L3 RefCount--，RefCount==0 时 L2 Dispose，顺序固定
+- FspNotify 必须在 L1/L2 全部释放后调用（WinFsp 可能重入）
+```
+
+### 2.2 API 设计
+
 ```csharp
 public sealed class DirectoryTree
 {
     private readonly FileNode _root;
     private readonly StringComparison _comparison = StringComparison.OrdinalIgnoreCase;
+    private readonly ConcurrentDictionary<string, Lock> _dirLocks = new();
 
     public FileNode? Lookup(ReadOnlySpan<char> path);
     public NtStatus TryCreate(ReadOnlySpan<char> parentPath, FileNode node, out FileNode? existing);
@@ -86,11 +109,43 @@ public sealed class DirectoryTree
 }
 ```
 
-**并发策略**：
+**并发策略（辩论裁决 R7：Hybrid 方案）**：
 - 每个目录的 `Children` = `ConcurrentDictionary<string, FileNode>`
-- 单节点操作（Create/Delete/Lookup）→ `ConcurrentDictionary` 原子方法
-- 跨目录 Rename → **按路径字典序加锁**两个父目录，防止 AB-BA 死锁
+- 单节点操作（Create/Delete/Lookup）→ `ConcurrentDictionary` 原子方法，**零树级锁**
+- 跨目录 Rename → **字典序 per-parent `Lock`** 双锁（禁止全局 RWLS 和无锁 CAS）
+- 同目录 Rename（大小写变更）→ 双锁退化单锁，`lockOld == lockNew` 不重复 Enter
 - `EnumerateDirectory` → `Children.Values.ToArray()` 快照，枚举期间不持锁
+- Rename Replace 语义：锁内 delete target → insert source，target Content 延迟到 Close Dispose
+
+```csharp
+public NtStatus Rename(ReadOnlySpan<char> oldPath, ReadOnlySpan<char> newPath, bool replace)
+{
+    ResolveParents(oldPath, newPath, out var oldParent, out var newParent, out var name, out var newName);
+    var lockOld = _dirLocks.GetOrAdd(oldParent.CanonicalPath, _ => new Lock());
+    var lockNew = _dirLocks.GetOrAdd(newParent.CanonicalPath, _ => new Lock());
+
+    using var _ = AcquireOrdered(oldParent.Path, newParent.Path, lockOld, lockNew);
+
+    if (!oldParent.Children!.TryRemove(name, out var node))
+        return NtStatus.STATUS_OBJECT_NAME_NOT_FOUND;
+    if (newParent.Children!.ContainsKey(newName) && !replace)
+    {
+        oldParent.Children.TryAdd(name, node); // rollback
+        return NtStatus.STATUS_OBJECT_NAME_COLLISION;
+    }
+    if (replace && newParent.Children.TryGetValue(newName, out var existing))
+    {
+        if (existing.IsDirectory && existing.Children!.Count > 0)
+            return NtStatus.STATUS_DIRECTORY_NOT_EMPTY;
+        existing.PendingDelete = true;
+        newParent.Children.TryRemove(newName, out _);
+    }
+    node.Name = newName;
+    newParent.Children[newName] = node;
+    return NtStatus.STATUS_SUCCESS;
+    // Notify 在此方法返回后、锁释放后调用
+}
+```
 
 ---
 
@@ -111,7 +166,8 @@ public sealed class PagedFileContent : IDisposable
     private long _reservedPages;
 
     public long FileSize => Volatile.Read(ref _fileSize);
-    public long AllocatedBytes => CountAllocatedPages() * _pool.PageSize;
+    private long _allocationSize;  // 增量维护，O(1) 读取
+    public long AllocationSize => Volatile.Read(ref _allocationSize);
 
     public int Read(long offset, Span<byte> buffer);
     public NtStatus Write(long offset, ReadOnlySpan<byte> data, out int bytesWritten);
@@ -202,21 +258,37 @@ public sealed class VMemFileSystem : IFileSystem
 }
 ```
 
-**Cleanup vs Close 语义（关键）**：
-- `Cleanup`：最后一个用户态句柄关闭。执行 `PendingDelete` 标记 + `FspNotify`
-- `Close`：内核引用归零。执行实际的 `FileNode.Dispose()`（释放页面）
+**Cleanup vs Close 语义（辩论裁决 R4/R7：memfs 骨架 + C# 适配）**：
+
+```
+Open  → RefCount++
+Cleanup（最后句柄关闭）
+    → 若 FILE_DELETE_ON_CLOSE → PendingDelete = true
+    → 若 PendingDelete → Notify(Delete)（锁外发送）
+    → 树节点 Remove 延迟到 Close RefCount==0
+    → 禁止在 Cleanup 同步 Dispose 页表
+Close → RefCount--
+    → 若 PendingDelete && RefCount == 0
+        → Dispose 内容（释放页面 + 归还 PagePool）
+    → 否则仅减引用计数
+```
+
+> **关键**：Cleanup 里不同步释放页——这是 RamDrive 早期 bug 来源。
 
 ---
 
 ## 5. WinFsp 内核缓存设计
 
-### 5.1 缓存策略配置
+### 5.1 缓存策略配置（辩论裁决 R4：Phase 1 默认 Safe）
 
-| 配置 | FileInfoTimeout | 行为 |
-|------|-----------------|------|
-| `EnableKernelCache=false` | 0 | 无缓存。最安全但最慢 |
-| 默认 | 1000 | 元数据缓存 1 秒，无数据缓存 |
-| `EnableKernelCache=true` | uint.MaxValue | 完整数据+元数据缓存 + Fast I/O。**最快** |
+| 模式 | FileInfoTimeout | 行为 | Phase 1 |
+|------|-----------------|------|---------|
+| **Safe（默认）** | 0 | 无缓存。最安全，winfsp-tests 主跑模式 | ✓ 主验收 |
+| Balanced | 1000 | 元数据缓存 1 秒，无数据缓存 | 可选冒烟 |
+| Fast | uint.MaxValue | 完整数据+元数据缓存 + Fast I/O。**最快** | ✓ 缓存一致性测试 |
+
+CLI 参数：`vmem mount R: --size 1G --cache safe|balanced|fast`（默认 `safe`）。
+Phase 1 验收完成后可改默认为 `balanced` 或 `fast`。
 
 ### 5.2 缓存失效通知（FspFileSystemNotify）
 
@@ -229,10 +301,24 @@ public sealed class VMemFileSystem : IFileSystem
 | `Overwrite` | 文件路径 | 刷新大小/属性 |
 | `SetFileSize` | 文件路径 | 更新 FileSize/AllocationSize |
 
-**实现要求**（学习自 hooyao/RamDrive）：
-- 零托管堆分配：栈上 `Span<byte>` 构建 UTF-16 路径缓冲区
+**实现要求**（辩论裁决 R4/R7）：
+- **时机**：锁内变异 → 解锁 → **同步** Notify → return SUCCESS。**禁止 defer/异步队列**
+- 零托管堆分配：`stackalloc char[260]` 构建 UTF-16 路径缓冲区
 - 路径格式：`\Dir\File.txt`
+- `EnableKernelCache=false` 时 Notify 是 no-op（`if (!_enableKernelCache) return;` 守卫）
+- SetBasicInfo（mtime 变更）和 SetFileSize 也要 Notify
+- Rename 发两次：先 `REMOVED(oldPath)` 后 `ADDED(newPath)`
 - 开销：每次变更多一次 P/Invoke + 小量 memcpy
+
+```csharp
+private void NotifyIfEnabled(ReadOnlySpan<char> path, uint action)
+{
+    if (!_enableKernelCache) return;
+    Span<char> buf = stackalloc char[260];
+    BuildNtPath(path, buf, out int len);
+    _host.Notify(buf[..len], action);
+}
+```
 
 ---
 

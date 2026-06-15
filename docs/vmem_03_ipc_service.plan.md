@@ -47,13 +47,30 @@ isProject: false
 
 ## 2. Named Pipe IPC
 
-### 2.1 控制通道
+### 2.1 控制通道 + IPC 安全基线（辩论裁决 R5）
 
 ```
 管道名: \\.\pipe\vmem-control-v1
 协议:   请求-响应，消息以换行分隔的 JSON
-认证:   PipeSecurity 限制为 Administrators 组 + 当前用户 SID
 ```
+
+**三层认证（无 HMAC）**：
+
+| 层级 | 机制 | 说明 |
+|------|------|------|
+| L1 连接 | PipeSecurity ACL | 拒绝 Everyone；允许 BA + Interactive User SID |
+| L2 请求 | ImpersonateNamedPipeClient | **写操作必做** Token 校验；读操作可缓存 SID |
+| L3 资源 | CreatorSid 归属 | CreateDisk 写入 CreatorSid；Remove/Update 校验 IsAdmin \|\| callerSid == CreatorSid |
+
+**流量限制**：
+
+| 参数 | 值 | 说明 |
+|------|-----|------|
+| 单条消息上限 | **64 KB** | 读前检查，超限断开 |
+| 全局 per-connection | **20 req/s，burst 40** | 正常 GUI 绰绰有余 |
+| 写操作 per-connection | **2 req/s，burst 5** | GUI debounce 300ms 天然合规 |
+| 并发连接 | **8** | 多用户 RDP 够用 |
+| 超限行为 | 返回 `{Success:false, Error:"RateLimited"}`，连续 10 次超限才断开 | |
 
 ### 2.2 消息协议
 
@@ -191,7 +208,11 @@ public class VMemWorker : BackgroundService
             }
         }
 
-        // Step 3: 启动 IPC 服务器（阻塞直到取消）
+        // Step 3: 启动 IPC 服务器（辩论裁决 R10：IPC Listen 不晚于 auto-mount）
+        // IPC 与 auto-mount 并行启动，GUI 可在挂载期间连接监控进度
+        _ = Task.Run(() => _pipeServer.ListenAsync(ct), ct);
+
+        // 或：先 Listen 再 auto-mount（推荐）
         await _pipeServer.ListenAsync(ct);
     }
 }
@@ -275,51 +296,35 @@ public sealed class ConfigStore
 }
 ```
 
-**完整配置 JSON Schema**：
+**配置 JSON Schema（辩论裁决 R2/R10：V1 极简，V2 扩展）**：
 
 ```jsonc
 // %ProgramData%\VMem\config.json
 {
-  // 全局设置（Service 级别）
+  "schemaVersion": 1,    // 必须有，V2 迁移用 IConfigMigrator
+
+  // V1 全局设置（仅 logLevel，其余硬编码）
   "global": {
-    "memoryWarningPercent": 90,       // 系统物理内存使用率告警阈值 (%)
-    "logLevel": "Information",         // Service 日志级别
-    "enableReplayLog": false,          // 是否启用 Verbose 回放日志
-    "logRetentionDays": 7,             // 日志保留天数
-    "preshutdownTimeoutMs": 180000     // PRESHUTDOWN 超时 (ms)
+    "logLevel": "Warning"              // V1 默认 Warning（辩论裁决 R2）
+    // V2+: memoryWarningPercent, enableReplayLog, logRetentionDays, preshutdownTimeoutMs
   },
 
-  // 自动挂载磁盘列表（开机时按顺序恢复）
+  // 自动挂载磁盘列表
+  // V1 config.json 仅写入 3 字段（辩论裁决 R2）
+  // 其余字段代码硬编码：PageSize=4KB, EnableKernelCache=false, PreAllocate=false
   "autoMountDisks": [
     {
       "driveLetter": "R:",
-      "capacityBytes": 2147483648,     // 2 GB
-      "pageSizeKB": 4,
-      "label": "Browser Cache",
-      "enableKernelCache": true,
-      "fileInfoTimeoutMs": 4294967295, // uint.MaxValue = 完整缓存
-      "preAllocate": false,
-      "rootSddl": null,               // null = 使用默认
-      "enableSnapshot": true,
-      "snapshotImagePath": "C:\\ProgramData\\VMem\\snapshots\\R.vmem",
-      "snapshotIntervalMinutes": 5
-    },
-    {
-      "driveLetter": "T:",
-      "capacityBytes": 4294967296,     // 4 GB
-      "pageSizeKB": 4,
-      "label": "System TEMP",
-      "enableKernelCache": true,
-      "fileInfoTimeoutMs": 4294967295,
-      "preAllocate": false,
-      "rootSddl": null,
-      "enableSnapshot": false,
-      "snapshotImagePath": null,
-      "snapshotIntervalMinutes": 0
+      "capacityBytes": 2147483648,
+      "label": "Browser Cache"
+      // V2+: pageSizeKB, enableKernelCache, preAllocate, rootSddl, snapshot.*
     }
   ]
 }
 ```
+
+> **V1 对外契约 = 3 字段 JSON**；内部 DiskConfig record 结构可保留嵌套类型预留扩展，
+> 但 **不持久化、不暴露 GUI** 扩展字段，等功能落地再扩 schema。
 
 ```csharp
 public record VMemConfig(GlobalSettings Global, List<DiskConfig> AutoMountDisks);

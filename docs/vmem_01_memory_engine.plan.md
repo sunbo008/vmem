@@ -205,78 +205,66 @@ for (int i = 0; i < batch.Count; i++)
 
 ## 3. StatsCollector - 实时统计
 
-> **性能设计**：WinFsp 回调在多线程中并发执行。如果所有线程对同一个 `long` 做 `Interlocked.Add`，
-> 会产生**缓存行伪共享（false sharing）**，显著降低吞吐量。
-> 方案：使用 `[ThreadStatic]` 线程本地累加 + 定时聚合，消除热路径上的原子操作。
+> **V1/V2 分级设计（辩论裁决 R6）**：
+> - **V1**：池级指标 `Volatile.Read`（零热路径竞争）；IO 统计默认关或 padded `Interlocked`
+> - **V2**（profile 触发）：`[ThreadStatic]` 线程本地累加 + 1s 聚合
 
 ```csharp
 public sealed class StatsCollector
 {
-    // 线程本地计数器（热路径零竞争）
-    [ThreadStatic] private static ThreadLocalCounters? t_counters;
-
-    private readonly ConcurrentBag<ThreadLocalCounters> _allCounters = new();
     private readonly Stopwatch _uptime;
 
-    private sealed class ThreadLocalCounters
-    {
-        public long ReadBytes;
-        public long WriteBytes;
-        public long ReadOps;
-        public long WriteOps;
-    }
+    // V1 池级指标（直接读 PagePool 字段，零额外竞争）
+    // GUI 1 秒轮询 GetSnapshot() 读取
+    public IoSnapshot GetSnapshot();
 
-    private ThreadLocalCounters GetCounters()
-    {
-        var c = t_counters;
-        if (c is null)
-        {
-            c = new ThreadLocalCounters();
-            t_counters = c;
-            _allCounters.Add(c);
-        }
-        return c;
-    }
+    // V1 可选：IO 统计（padded Interlocked，默认关闭）
+    [StructLayout(LayoutKind.Explicit, Size = 128)]
+    private struct PaddedCounter { [FieldOffset(64)] public long Value; }
+
+    private PaddedCounter _readBytes;
+    private PaddedCounter _writeBytes;
 
     public void RecordRead(int bytes)
     {
-        var c = GetCounters();
-        c.ReadBytes += bytes;    // 线程本地，无需原子操作
-        c.ReadOps++;
+        Interlocked.Add(ref _readBytes.Value, bytes);
     }
 
     public void RecordWrite(int bytes)
     {
-        var c = GetCounters();
-        c.WriteBytes += bytes;
-        c.WriteOps++;
+        Interlocked.Add(ref _writeBytes.Value, bytes);
     }
 
-    /// 获取快照并重置速率计数器（GUI 轮询，默认 1 秒间隔）。
-    /// 聚合所有线程本地计数器 → 仅在读取路径（1次/秒）产生竞争。
-    public IoSnapshot GetAndResetSnapshot();
+    // V2 触发条件：8T 压测 stats 占 >5% cycles → 切 [ThreadStatic] + 1s GetAndResetSnapshot
 }
 
 public readonly record struct IoSnapshot(
-    long ReadBytesPerSec, long WriteBytesPerSec,
-    long ReadOpsPerSec, long WriteOpsPerSec,
     long TotalUsedBytes, long TotalReservedBytes, long TotalCapacityBytes,
-    int FileCount, TimeSpan Uptime);
+    int FileCount, TimeSpan Uptime,
+    double PoolUtilizationPercent,    // V1 新增：Pool 利用率
+    long ReadBytesTotal, long WriteBytesTotal);
 ```
 
 ---
 
-## 4. 正确性不变量（L3 契约化检查）
+## 4. 正确性不变量（辩论裁决 R2/R6：Release O(1) + 采样 O(n)）
 
-参考 hooyao/RamDrive TLA+ 验证。**与传统做法不同，所有不变量在 Release 构建中也生效**，违反时通过 `Contract.Invariant` 写入结构化日志（见[子方案 ⑦](./vmem_07_logging_observability.plan.md)），不崩溃但记录完整上下文供 AI 分析：
+参考 hooyao/RamDrive TLA+ 验证。
 
-| 不变量 | 表达式 | 检查时机 |
-|--------|--------|---------|
-| PoolConsistent | `rentedCount + freeStack.Count <= allocatedCount <= maxPages` | 每次 Rent/Return 后 |
-| NoPageLeak | 所有已 Rent 的页在某文件 pageTable 或 BatchLease in-transit 中 | Dispose 时 → **强制 NativeMemory.Free 泄漏页** |
-| ReservationsConsistent | `Σ(file.reservedPages) == pool.reservedCount` | Dispose 时 |
-| CommittedWithinCapacity | `rentedCount + reservedCount <= maxPages` | 每次 Rent/Reserve 后 |
-| NoNegativeCount | `rentedCount >= 0 && reservedCount >= 0` | 每次 Return/Unreserve 后 |
+> **核心变更**：审查 P0 指出 `freeStack.Count` 是 O(n) 操作，不能在热路径 Release 检查。
+> V1 策略：**Release 仅 O(1) 硬边界**；O(n) 完整性改为**采样（每 1024 次）或 Dispose 时**。
+> O(1) 边界违反 → **拒绝当前操作** + ERR 结构化日志（含 correlationId）；不 silent continue。
+
+| 不变量 | 表达式 | 检查时机 | Release 行为 |
+|--------|--------|---------|-------------|
+| **CommittedWithinCapacity** | `rentedCount + reservedCount <= maxPages` | 每次 Rent/Reserve 后 | ✓ O(1)，违反→拒绝操作 |
+| **NoNegativeCount** | `rentedCount >= 0 && reservedCount >= 0` | 每次 Return/Unreserve 后 | ✓ O(1)，违反→ERR 日志 |
+| PoolConsistent | `rentedCount + freeCount <= allocatedCount` | **采样（每 1024 次）** 或 Dispose 时 | O(1) 计数器版本 |
+| NoPageLeak | 所有已 Rent 的页在某文件 pageTable 或 BatchLease 中 | Dispose 时 | ✓ 强制 Free 泄漏页 |
+| ReservationsConsistent | `Σ(file.reservedPages) == pool.reservedCount` | Dispose 时 | ✓ ERR 日志 |
+| PageTableIntegrity | 所有非零页表项指向有效 NativeMemory 地址 | Dispose 时（O(n) 扫描） | ✓ Debug 全量 |
+
+> V1 维护 `_freeCount` 整数计数器替代 `freeStack.Count`，Rent 时递减、Return 时递增，O(1)。
 
 ---
 
@@ -299,29 +287,32 @@ public readonly record struct IoSnapshot(
 | Dispose | `INF` | allocatedCount, rentedCount(泄漏数), freeStack.Count |
 | Dispose 检测到泄漏 | `ERR` | 泄漏页数, 泄漏占比 |
 
-### 5.2 性能追踪
+### 5.2 性能追踪（辩论裁决 R6：V1 热路径零计时）
+
+> **V1**：Release 热路径**不内嵌任何 Stopwatch/ValueStopwatch**。
+> 性能数据通过 **BenchmarkDotNet**（外置）和 **ETW/EventPipe** 获取。
+> Debug 构建可选 `#if DEBUG` 包裹的 ValueStopwatch 分阶段计时。
 
 ```csharp
+// V1 Release：零计时
 public bool TryRent(out nint page)
 {
-    var sw = Stopwatch.StartNew();
-    // ... 分配逻辑 ...
-    sw.Stop();
-    if (sw.Elapsed.TotalMilliseconds > 1.0)
-    {
-        _logger.Warning("SLOW OPERATION TryRent took {ElapsedMs}ms, " +
-            "likely OS page fault during NativeMemory.AllocZeroed",
-            sw.Elapsed.TotalMilliseconds);
-    }
+    // 纯分配逻辑，无 Stopwatch
 }
+
+// V1 Debug（可选）：
+#if DEBUG
+public bool TryRent(out nint page)
+{
+    var start = Stopwatch.GetTimestamp();
+    // ... 分配逻辑 ...
+    var elapsed = Stopwatch.GetElapsedTime(start);
+    if (elapsed.TotalMilliseconds > 1.0)
+        _logger.Warning("SLOW TryRent {ElapsedMs}ms", elapsed.TotalMilliseconds);
+}
+#endif
 ```
 
-| 操作 | 慢操作阈值 | 可能原因 |
-|------|-----------|---------|
-| `TryRent` | > 1ms | OS 页错误（惰性分配首次触碰物理页） |
-| `TryRentBatch` | > 5ms (1000页) | 连续 OS 页错误 |
-| `Return` + Clear | > 0.5ms | 大页 (64KB) 清零开销 |
+### 5.3 StatsCollector 周期摘要（V1 不做，V2 触发）
 
-### 5.3 StatsCollector 周期摘要
-
-`StatsCollector.GetAndResetSnapshot()` 每 60 秒输出一次 `INF` 级别的统计摘要日志，包含吞吐量、IOPS、池利用率、文件数、契约违反计数等（格式见子方案 ⑦ §6.2）。
+> V1 不做 60s 周期统计摘要。池利用率通过 `IoSnapshot.PoolUtilizationPercent` 按需查询。
