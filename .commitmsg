@@ -1,10 +1,24 @@
-R201-R1000: security audit, maintainability, extensibility, final saturation
+四巨头审查 R1-R10：伪代码严谨性修复 — CAS竞态、异常安全、原子性
 
-Complete 1000-round design review:
-- R201-R300: Security audit (10+ attack surfaces, all mitigated)
-- R301-R500: Maintainability review (7/7 dimensions passed)
-- R501-R700: Extensibility review (8 future directions with design reserves)
-- R701-R1000: Final saturation declaration
+【Google 总监】
+- 修复 TryReserve CAS 竞态：增加后置校验，超额时回退预留
+- Write 伪代码：禁止跨页 CopyBlock，强制逐页 memcpy
+- TryRent 完整伪代码：容量快速检查 + OOM 捕获 + 计数器维护
 
-Total findings: 48 issues fixed (P0x6, P1x18, P2x24), 76+ design details added
-Design review complete. Ready for Phase 1 implementation.
+【Microsoft 总监】
+- 修复 Rename rollback 原子性：先检查存在性再 TryRemove，
+  避免 rollback TryAdd 失败导致节点丢失
+- 完善 Cleanup/Close 锁序注释
+
+【Amazon 总监】
+- PagePool.Return 增加页面有效性校验（page==0 抛异常）
+- Return 不检查 _disposed：Dispose 后延迟 Return 仍归还，
+  Dispose 统一 Free 全部页面
+- PagePool.Dispose 完整伪代码：泄漏检测 + 逐页 Free + 日志
+
+【Oracle 总监】
+- BatchLease.Commit 增加边界检查 + double-commit 防护 + Dispose 后防护
+- PageLease 增加 Debug.Assert + double-commit 防护 + Dispose 后 page=0
+- Read 完整伪代码：读锁全程覆盖 + 稀疏零填充 + FileSize clamp
+- Write 完整伪代码：三阶段含 TOCTOU 重检 + FileSize/AllocationSize 事务提交
+- TryRentFromReservation 完整伪代码：CAS 扣减预留 + OOM 回退

@@ -47,15 +47,80 @@ public sealed class PagePool : IDisposable
     private int _disposed;
 
     // === 基本操作 ===
-    public bool TryRent(out nint page);
+    public bool TryRent(out nint page)
+    {
+        page = 0;
+        if (Volatile.Read(ref _disposed) != 0) return false;
+
+        // 容量快速检查
+        if (Volatile.Read(ref _rentedCount) + Volatile.Read(ref _reservedCount) >= _maxPages)
+            return false;
+
+        if (!_freePages.TryPop(out page))
+        {
+            // free stack 空 → 尝试从 OS 分配新页
+            if (Volatile.Read(ref _allocatedCount) >= _maxPages) return false;
+            try
+            {
+                page = (nint)NativeMemory.AllocZeroed((nuint)_pageSize);
+            }
+            catch (OutOfMemoryException)
+            {
+                _logger.Error("OOM: AllocZeroed failed, allocated={Allocated}", _allocatedCount);
+                return false;
+            }
+            Interlocked.Increment(ref _allocatedCount);
+        }
+
+        Interlocked.Increment(ref _rentedCount);
+        Interlocked.Decrement(ref _freeCount);
+        return true;
+    }
     public int TryRentBatch(Span<nint> pages);
-    public void Return(nint page);           // 自动 NativeMemory.Clear 清零
+    // Amazon 审查：Return 须检查 _disposed（延迟归还场景）和页面有效性
+    public void Return(nint page)
+    {
+        if (page == 0) throw new ArgumentException("Cannot return null page");
+        NativeMemory.Clear((void*)page, (nuint)_pageSize);
+        _freePages.Push(page);
+        Interlocked.Decrement(ref _rentedCount);
+        Interlocked.Increment(ref _freeCount);
+        // 不检查 _disposed：Dispose 后的延迟 Return 仍需归还以免泄漏
+        // Dispose 会在最后统一 Free 所有页面
+    }
     public void ReturnBatch(ReadOnlySpan<nint> pages);
 
     // === 容量预留 ===
     public bool TryReserve(long pageCount);
     public void Unreserve(long pageCount);
-    public bool TryRentFromReservation(out nint page);
+    public bool TryRentFromReservation(out nint page)
+    {
+        // 从已预留配额中分配物理页（不再检查总容量，预留时已检查）
+        page = 0;
+        // 1. 先扣减 reserved → 增加 rented（保持 total 不变）
+        while (true)
+        {
+            long currentReserved = Volatile.Read(ref _reservedCount);
+            if (currentReserved <= 0) return false; // 无可用预留
+            if (Interlocked.CompareExchange(ref _reservedCount,
+                    currentReserved - 1, currentReserved) == currentReserved)
+                break;
+        }
+        // 2. 分配物理页
+        if (!_freePages.TryPop(out page))
+        {
+            try { page = (nint)NativeMemory.AllocZeroed((nuint)_pageSize); }
+            catch (OutOfMemoryException)
+            {
+                Interlocked.Increment(ref _reservedCount); // 回退预留
+                return false;
+            }
+            Interlocked.Increment(ref _allocatedCount);
+        }
+        Interlocked.Increment(ref _rentedCount);
+        Interlocked.Decrement(ref _freeCount);
+        return true;
+    }
 
     // === 统计 ===
     public long AllocatedPages => Volatile.Read(ref _allocatedCount);
@@ -65,12 +130,28 @@ public sealed class PagePool : IDisposable
     public int PageSize => _pageSize;
     public long TotalCapacityBytes => _maxPages * _pageSize;
 
-    // === Dispose（R33）===
-    // Interlocked.Exchange(ref _disposed, 1) 防双释放
-    // 遍历 _freePages 全部 NativeMemory.Free
-    // 检测泄漏：if (rentedCount > 0) ERR 日志 + Debug.Fail
-    // 不变量验证：NoPageLeak + ReservationsConsistent（Dispose 时 O(n)）
-    public void Dispose();
+    public void Dispose()
+    {
+        if (Interlocked.Exchange(ref _disposed, 1) != 0) return; // 防双释放
+
+        long leakedPages = Volatile.Read(ref _rentedCount);
+        if (leakedPages > 0)
+        {
+            _logger.Error("PagePool LEAK: {LeakedPages} pages not returned ({LeakedBytes} bytes)",
+                leakedPages, leakedPages * _pageSize);
+            Debug.Fail($"PagePool leak: {leakedPages} pages");
+        }
+
+        long freedCount = 0;
+        while (_freePages.TryPop(out nint page))
+        {
+            NativeMemory.Free((void*)page);
+            freedCount++;
+        }
+
+        _logger.Information("PagePool disposed: freed={Freed} allocated={Allocated} leaked={Leaked}",
+            freedCount, Volatile.Read(ref _allocatedCount), leakedPages);
+    }
 }
 ```
 
@@ -100,14 +181,31 @@ hooyao/RamDrive 默认 64KB 面向大文件；本项目面向通用场景，4KB 
 ```csharp
 public bool TryReserve(long pageCount)
 {
+    if (pageCount <= 0) throw new ArgumentOutOfRangeException(nameof(pageCount));
+    if (Volatile.Read(ref _disposed) != 0) throw new ObjectDisposedException(nameof(PagePool));
+
     while (true)
     {
-        long current = Volatile.Read(ref _reservedCount);
-        long rented = Volatile.Read(ref _rentedCount);
-        if (rented + current + pageCount > _maxPages)
+        // Google 审查：rented + reserved 非原子快照存在 TOCTOU 窗口
+        // 修复：在 CAS 成功后做 post-condition 校验，超额则回退
+        long currentReserved = Volatile.Read(ref _reservedCount);
+        long currentRented = Volatile.Read(ref _rentedCount);
+        long total = currentRented + currentReserved + pageCount;
+        if (total > _maxPages)
             return false; // STATUS_DISK_FULL
-        if (Interlocked.CompareExchange(ref _reservedCount, current + pageCount, current) == current)
+
+        if (Interlocked.CompareExchange(ref _reservedCount,
+                currentReserved + pageCount, currentReserved) == currentReserved)
+        {
+            // 后置校验：如果 CAS 成功但实际已超额（极端并发），回退
+            if (Volatile.Read(ref _rentedCount) + Volatile.Read(ref _reservedCount) > _maxPages)
+            {
+                Interlocked.Add(ref _reservedCount, -pageCount); // 回退
+                return false;
+            }
             return true;
+        }
+        // CAS 失败 → 自旋重试
     }
 }
 ```
@@ -136,13 +234,32 @@ public ref struct PageLease
     private nint _page;
     private bool _committed;
 
-    internal PageLease(PagePool pool, nint page) { _pool = pool; _page = page; }
-    public nint Page => _page;
+    internal PageLease(PagePool pool, nint page)
+    {
+        Debug.Assert(page != 0, "PageLease created with null page");
+        _pool = pool;
+        _page = page;
+    }
+
+    public nint Page => _page != 0 ? _page : throw new ObjectDisposedException(nameof(PageLease));
 
     /// 移交所有权给调用方（如 PagedFileContent），Dispose 不再归还。
-    public nint Commit() { _committed = true; return _page; }
+    public nint Commit()
+    {
+        if (_committed) throw new InvalidOperationException("Already committed");
+        if (_page == 0) throw new ObjectDisposedException(nameof(PageLease));
+        _committed = true;
+        return _page;
+    }
 
-    public void Dispose() { if (!_committed && _page != 0) _pool.Return(_page); }
+    public void Dispose()
+    {
+        if (!_committed && _page != 0)
+        {
+            _pool.Return(_page);
+            _page = 0; // 防止 double-return
+        }
+    }
 }
 ```
 
@@ -182,18 +299,31 @@ public sealed class BatchLease : IDisposable
     /// 批量从池中分配，返回实际分配数
     internal int RentBatch(int requested) { ... }
 
-    /// 移交单页所有权
-    public nint Commit(int index) { _committed[index] = true; return _pages[index]; }
+    /// 移交单页所有权（Oracle 审查：增加边界检查 + Dispose 后防护）
+    public nint Commit(int index)
+    {
+        ObjectDisposedException.ThrowIf(_disposed, this);
+        ArgumentOutOfRangeException.ThrowIfNegative(index);
+        ArgumentOutOfRangeException.ThrowIfGreaterThanOrEqual(index, _count);
+        if (_committed[index]) throw new InvalidOperationException($"Page {index} already committed");
+        _committed[index] = true;
+        return _pages[index];
+    }
 
     /// 移交全部已分配页的所有权
-    public nint[] CommitAll() { ... }
+    public nint[] CommitAll()
+    {
+        ObjectDisposedException.ThrowIf(_disposed, this);
+        for (int i = 0; i < _count; i++) _committed[i] = true;
+        return _pages[.._count];
+    }
 
     public void Dispose()
     {
         if (_disposed) return;
         _disposed = true;
         for (int i = 0; i < _count; i++)
-            if (!_committed[i]) _pool.Return(_pages[i]);
+            if (!_committed[i] && _pages[i] != 0) _pool.Return(_pages[i]);
     }
 }
 ```

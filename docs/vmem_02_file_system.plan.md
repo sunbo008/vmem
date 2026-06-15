@@ -135,13 +135,14 @@ public NtStatus Rename(ReadOnlySpan<char> oldPath, ReadOnlySpan<char> newPath, b
 
     using var _ = AcquireOrdered(oldParent.Path, newParent.Path, lockOld, lockNew);
 
-    if (!oldParent.Children!.TryRemove(name, out var node))
+    // Microsoft 审查：先检查再 Remove，避免 rollback 失败导致节点丢失
+    if (!oldParent.Children!.ContainsKey(name))
         return NtStatus.STATUS_OBJECT_NAME_NOT_FOUND;
     if (newParent.Children!.ContainsKey(newName) && !replace)
-    {
-        oldParent.Children.TryAdd(name, node); // rollback
         return NtStatus.STATUS_OBJECT_NAME_COLLISION;
-    }
+    // 校验通过后再执行 Remove（锁内保证无竞争）
+    if (!oldParent.Children.TryRemove(name, out var node))
+        return NtStatus.STATUS_OBJECT_NAME_NOT_FOUND; // 理论不可达，防御编程
     if (replace && newParent.Children.TryGetValue(newName, out var existing))
     {
         if (existing.IsDirectory && existing.Children!.Count > 0)
@@ -183,13 +184,101 @@ public sealed class PagedFileContent : IDisposable
     private long _allocationSize;  // 增量维护，O(1) 读取
     public long AllocationSize => Volatile.Read(ref _allocationSize);
 
-    // Read（辩论裁决 R11）：读锁全程覆盖 clamp + memcpy，防止并发 Truncate UAF
-    // 稀疏页（pageTable==0）零填充而非跳过
-    public int Read(long offset, Span<byte> buffer);
+    public int Read(long offset, Span<byte> buffer)
+    {
+        _rwLock.EnterReadLock();
+        try
+        {
+            // Clamp 到 FileSize（读锁内保证 _fileSize 不被并发截断）
+            long fileSize = Volatile.Read(ref _fileSize);
+            if (offset >= fileSize) return 0;
+            int bytesToRead = (int)Math.Min(buffer.Length, fileSize - offset);
+            int totalRead = 0;
 
-    // Write（辩论裁决 R11）：外层逐页循环 + 内层 NativeMemory.Copy；禁止跨页 CopyBlock
-    // Phase 3 事务：FileSize=max + AllocationSize 增量 + 页表 commit 在同一写锁内
-    public NtStatus Write(long offset, ReadOnlySpan<byte> data, out int bytesWritten);
+            while (totalRead < bytesToRead)
+            {
+                int pageIndex = (int)((offset + totalRead) / _pool.PageSize);
+                int pageOffset = (int)((offset + totalRead) % _pool.PageSize);
+                int chunkSize = Math.Min(_pool.PageSize - pageOffset, bytesToRead - totalRead);
+
+                nint page = pageIndex < _pageTable.Length ? _pageTable[pageIndex] : 0;
+                if (page != 0)
+                {
+                    // 已分配页：memcpy
+                    new Span<byte>((byte*)page + pageOffset, chunkSize)
+                        .CopyTo(buffer.Slice(totalRead, chunkSize));
+                }
+                else
+                {
+                    // 稀疏页（Oracle 审查）：零填充而非跳过
+                    buffer.Slice(totalRead, chunkSize).Clear();
+                }
+                totalRead += chunkSize;
+            }
+            return totalRead;
+        }
+        finally { _rwLock.ExitReadLock(); }
+    }
+
+    public NtStatus Write(long offset, ReadOnlySpan<byte> data, out int bytesWritten)
+    {
+        bytesWritten = 0;
+        if (data.Length == 0) return NtStatus.STATUS_SUCCESS;
+
+        // === Phase 1: 读锁扫描缺失页 ===
+        List<int> missingIndices;
+        _rwLock.EnterReadLock();
+        try
+        {
+            missingIndices = new List<int>();
+            int startPage = (int)(offset / _pool.PageSize);
+            int endPage = (int)((offset + data.Length - 1) / _pool.PageSize);
+            EnsurePageTableCapacity(endPage + 1); // 可能扩容
+            for (int i = startPage; i <= endPage; i++)
+                if (_pageTable[i] == 0) missingIndices.Add(i);
+        }
+        finally { _rwLock.ExitReadLock(); }
+
+        // === Phase 2: 锁外批量分配（BatchLease 保护异常路径）===
+        using var batch = _pool.RentBatch(missingIndices.Count);
+        if (batch.Count < missingIndices.Count)
+            return NtStatus.STATUS_DISK_FULL;
+
+        // === Phase 3: 写锁赋值 + memcpy ===
+        _rwLock.EnterWriteLock();
+        try
+        {
+            int batchIdx = 0;
+            for (int i = 0; i < missingIndices.Count; i++)
+            {
+                int pageIdx = missingIndices[i];
+                if (_pageTable[pageIdx] == 0) // TOCTOU 重检
+                    _pageTable[pageIdx] = batch.Commit(batchIdx);
+                batchIdx++;
+            }
+
+            // 逐页 memcpy（Google 审查：禁止跨页 CopyBlock）
+            int written = 0;
+            while (written < data.Length)
+            {
+                int pageIdx = (int)((offset + written) / _pool.PageSize);
+                int pageOff = (int)((offset + written) % _pool.PageSize);
+                int chunk = Math.Min(_pool.PageSize - pageOff, data.Length - written);
+                data.Slice(written, chunk).CopyTo(
+                    new Span<byte>((byte*)_pageTable[pageIdx] + pageOff, chunk));
+                written += chunk;
+            }
+
+            // 事务提交：FileSize + AllocationSize 原子更新
+            long newEnd = offset + data.Length;
+            if (newEnd > _fileSize) Volatile.Write(ref _fileSize, newEnd);
+            _allocationSize = Math.Max(_allocationSize, CeilToPageBoundary(newEnd));
+            bytesWritten = data.Length;
+        }
+        finally { _rwLock.ExitWriteLock(); }
+
+        return NtStatus.STATUS_SUCCESS;
+    }
     public NtStatus SetLength(long newLength);
     public void Dispose();
 }
