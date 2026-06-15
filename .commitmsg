@@ -1,23 +1,24 @@
-四巨头审查 R41-R60：Windows平台最佳实践 + 数据一致性 — 回调完整伪代码
-
-【Microsoft 总监】
-- VMemFileSystem.Create 回调完整伪代码：
-  · 参数校验（文件名长度 ≤ 255）
-  · FileNode 工厂创建（目录/文件区分）
-  · TryCreate 失败时 Dispose 新节点防泄漏
-  · AllocationSize 预留失败时回滚（从树移除 + Dispose）
-  · 顶层 try-catch 防止异常逃逸到 WinFsp 内核
-  · OperationContext 追踪 CorrelationId
-
-【Oracle 总监】
-- GetFileInfo 完整伪代码：FileContext→FileNode→ToFileInfo
-- ToFileInfo 辅助方法：7 字段映射（AllocationSize/FileSize/4×时间戳/Attributes）
-- AllocationSize 使用 Content?.AllocationSize ?? 0（目录返回 0）
+四巨头审查 R61-R70：可观测性深化 + 测试补充 — Serilog初始化、OperationScope增强
 
 【Google 总监】
-- Create 中 AllocationSize 预留流程确保事务一致性
-  失败时按顺序回滚：TryRemove → node.Dispose
+- OperationContext 增加 CallbackName 线程本地变量，便于日志关联
+- OperationScope Dispose 时自动检测慢回调（>50ms 自动告警）
 
 【Amazon 总监】
-- Create 失败路径完整资源清理验证
-- 日志记录创建失败的路径和异常详情
+- OperationScope 使用 Stopwatch.GetTimestamp/GetElapsedTime 精确计时
+- OperationScope 正确清理 LogContext 属性（Dispose 顺序）
+
+【Oracle 总监】
+- VMemLogger 完整初始化伪代码：
+  · AOT 兼容的 WriteTo 配置（非 ReadFrom.Configuration）
+  · CompactJsonFormatter 用于 JSON Sink
+  · 日志轮转参数：100MB 文件大小 + 7 天保留
+  · FlushToDiskInterval 1 秒
+  · LoggingLevelSwitch 支持运行时热切换
+- 项目代码结构更新
+
+【Microsoft 总监】
+- 测试方案新增 10 条测试用例：
+  · PagePool: TryReserve 后置回退、Return 防护、BatchLease 异常安全
+  · PagedFileContent: 截断清零、零长写入、Dispose 释放验证
+  · 集成测试: DiskFull、Mount/Unmount 资源泄漏循环测试

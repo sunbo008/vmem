@@ -180,23 +180,46 @@ public static class OperationContext
         set => t_correlationId = value;
     }
 
+    // Amazon 审查：增加 Stopwatch 追踪操作总耗时
     public static IDisposable BeginFsOperation(string callbackName)
     {
         var id = Guid.NewGuid().ToString("N")[..8];
         t_correlationId = id;
-        // 通过 Serilog LogContext 注入，后续日志自动携带
         return new OperationScope(id, callbackName);
     }
 
+    // Google 审查：暴露当前操作名用于日志
+    [ThreadStatic] private static string? t_callbackName;
+    public static string CallbackName => t_callbackName ?? "Unknown";
+
     private sealed class OperationScope : IDisposable
     {
-        private readonly string _id;
+        private readonly IDisposable? _logContextCorrelation;
+        private readonly IDisposable? _logContextCallback;
+        private readonly long _startTimestamp;
+
         public OperationScope(string id, string callback)
         {
-            _id = id;
-            // Push to Serilog LogContext for enrichment
+            t_callbackName = callback;
+            _startTimestamp = Stopwatch.GetTimestamp();
+            // Push to Serilog LogContext for automatic enrichment
+            _logContextCorrelation = LogContext.PushProperty("CorrelationId", id);
+            _logContextCallback = LogContext.PushProperty("Callback", callback);
         }
-        public void Dispose() => t_correlationId = null;
+
+        public void Dispose()
+        {
+            var elapsed = Stopwatch.GetElapsedTime(_startTimestamp);
+            if (elapsed.TotalMilliseconds > 50)
+            {
+                Log.Warning("SLOW FS callback {Callback} took {ElapsedMs}ms correlationId={Id}",
+                    t_callbackName, elapsed.TotalMilliseconds, t_correlationId);
+            }
+            _logContextCallback?.Dispose();
+            _logContextCorrelation?.Dispose();
+            t_correlationId = null;
+            t_callbackName = null;
+        }
     }
 }
 ```
@@ -494,16 +517,58 @@ public void Replay_Seq42_Write_a_txt()
 
 ---
 
-## 10. 项目代码结构
+## 10. Serilog 初始化伪代码（Oracle 审查补充）
+
+```csharp
+public static class VMemLogger
+{
+    public static void Initialize(LoggingConfig config)
+    {
+        // AOT 兼容：使用 WriteTo 而非 ReadFrom.Configuration
+        var loggerConfig = new LoggerConfiguration()
+            .MinimumLevel.Is(ParseLevel(config.MinimumLevel))
+            .Enrich.FromLogContext()   // 支持 CorrelationId 注入
+            .Enrich.WithThreadId()
+            .Enrich.WithProcessId();
+
+        // V1: 仅 Console + JSON File
+        loggerConfig.WriteTo.Console(
+            outputTemplate: "[{Timestamp:HH:mm:ss} {Level:u3}] {Message:lj}{NewLine}{Exception}");
+
+        loggerConfig.WriteTo.File(
+            new CompactJsonFormatter(),
+            path: Path.Combine(config.JsonLogPath, "vmem-.json"),
+            rollingInterval: RollingInterval.Day,
+            fileSizeLimitBytes: config.MaxFileSizeMB * 1024L * 1024,
+            retainedFileCountLimit: config.RetentionDays,
+            shared: false,             // 单进程写入
+            flushToDiskInterval: TimeSpan.FromSeconds(1));
+
+        Log.Logger = loggerConfig.CreateLogger();
+        Log.Information("VMemLogger initialized: level={Level} path={Path}",
+            config.MinimumLevel, config.JsonLogPath);
+    }
+
+    // 运行时热切换日志级别
+    private static LoggingLevelSwitch _levelSwitch = new(LogEventLevel.Warning);
+    public static void SetLevel(string level)
+    {
+        _levelSwitch.MinimumLevel = ParseLevel(level);
+        Log.Information("Log level changed to {Level}", level);
+    }
+}
+```
+
+## 10.1 项目代码结构
 
 ```
 src/VMem.Core/Diagnostics/
-├── VMemLogger.cs            # Serilog 初始化 + 配置
+├── VMemLogger.cs            # Serilog 初始化 + 配置 + 热切换
 ├── OperationContext.cs       # CorrelationId + ThreadStatic（R10 裁决）
 ├── Contract.cs              # 前置/后置/不变量检查
-├── HealthChecker.cs         # 周期性健康检查
+├── HealthChecker.cs         # 健康检查（V1 按需）
 ├── SlowOperationDetector.cs # 慢操作告警
-└── DigestWriter.cs          # 周期性统计摘要输出
+└── DigestWriter.cs          # 周期性统计摘要输出（V2）
 ```
 
 ---

@@ -79,9 +79,14 @@ isProject: false
 | TryReserve_AtomicUnderContention | 8 线程并发 Reserve CAS 正确 |
 | TryReserve_ExceedsCapacity_ReturnsFalse | 预留超限返回 false |
 | TryRentFromReservation_DecrementsReserved | 预留转 Rent 计数正确 |
-| Dispose_DetectsLeak | 有未归还页时 Debug 断言 |
+| Dispose_DetectsLeak | 有未归还页时 ERR 日志 + Debug.Fail |
 | LazyAllocation_AllocsOnDemand | 首次 Rent 才触发 NativeMemory.Alloc |
 | PreAllocate_AllocsAll | PreAllocate=true 构造时全部分配 |
+| TryReserve_PostConditionRollback | CAS 成功但 post-check 超额时回退 |
+| Return_AfterDispose_StillReturns | Dispose 后延迟 Return 不抛异常 |
+| Return_NullPage_ThrowsArgException | Return(0) 抛 ArgumentException |
+| BatchLease_Commit_AfterDispose_Throws | Dispose 后 Commit 抛 ObjectDisposedException |
+| BatchLease_DoubleCommit_Throws | 同一页二次 Commit 抛 InvalidOperationException |
 
 ### PagedFileContentTests
 
@@ -95,6 +100,10 @@ isProject: false
 | SetLength_Extend_ReservesCapacity | 扩展预留配额 |
 | SetLength_Truncate_FreesPages | 截断归还页面 + Unreserve |
 | CapacityExhaustion_ReturnsError | 池耗尽返回 STATUS_DISK_FULL |
+| SetLength_Truncate_ClearsPartialPage | 截断到页中间时尾部字节清零 |
+| Write_ZeroLength_NoOp | 写入 0 字节返回 SUCCESS 无副作用 |
+| Dispose_ReleasesAllPages | Dispose 后所有页归还到 Pool |
+| Dispose_UnreservesRemaining | Dispose 后预留计数归零 |
 
 ### DirectoryTreeTests
 
@@ -145,6 +154,8 @@ public class WinFspComplianceTests : IAsyncLifetime
     [Fact] public void DeleteFile_FreesMemory() { /* delete → pool AvailablePages increased */ }
     [Fact] public void ConcurrentReadWrite_8Threads() { /* parallel read/write, verify data integrity */ }
     [Fact] public void SecurityDescriptor_InheritedFromParent() { /* create subdir, check ACL */ }
+    [Fact] public void DiskFull_ReturnsError() { /* fill disk to capacity, next write returns error */ }
+    [Fact] public void MountUnmount_NoResourceLeak() { /* mount/unmount 10 cycles, memory stable */ }
 
     public async Task DisposeAsync() => await _fs.UnmountAsync();
 }
